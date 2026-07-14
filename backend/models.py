@@ -1,0 +1,26 @@
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, String, Float, Text, DateTime
+from datetime import datetime
+
+Base = declarative_base()
+
+class POI(Base):
+    __tablename__ = "poi"
+
+    contentid = Column(String, primary_key=True)
+    region = Column(String, index=True)
+    contenttypeid = Column(String, index=True)
+    title = Column(String, index=True)
+    addr1 = Column(String)
+    addr2 = Column(String)
+    zipcode = Column(String)
+    tel = Column(String)
+    mapx = Column(Float)
+    mapy = Column(Float)
+    firstimage = Column(String)
+    firstimage2 = Column(String)
+    createdtime = Column(String)
+    modifiedtime = Column(String)
+    raw_json = Column(Text)
+    source_file = Column(String)
+    ingested_at = Column(DateTime, default=datetime.utcnow)
