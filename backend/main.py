@@ -6,7 +6,7 @@ import os
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from models import POI
 
@@ -48,14 +48,22 @@ def poi_to_dict(r: POI):
 @app.get("/api/pois")
 async def list_pois(q: str | None = Query(None), region: str | None = None, contenttypeid: str | None = None, limit: int = 20, offset: int = 0):
     async with AsyncSessionLocal() as session:
-        stmt = select(POI)
         if q:
-            stmt = stmt.where(POI.title.contains(q))
-        if region:
-            stmt = stmt.where(POI.region == region)
-        if contenttypeid:
-            stmt = stmt.where(POI.contenttypeid == contenttypeid)
-        stmt = stmt.limit(limit).offset(offset)
+            # FTS search to get contentids
+            sql = text("SELECT contentid FROM poi_fts WHERE poi_fts MATCH :q LIMIT :lim OFFSET :off")
+            res = await session.execute(sql.bindparams(q=q, lim=limit, off=offset))
+            contentids = [row[0] for row in res.fetchall()]
+            if not contentids:
+                return {"count": 0, "items": []}
+            stmt = select(POI).where(POI.contentid.in_(contentids))
+        else:
+            stmt = select(POI)
+            if region:
+                stmt = stmt.where(POI.region == region)
+            if contenttypeid:
+                stmt = stmt.where(POI.contenttypeid == contenttypeid)
+            stmt = stmt.limit(limit).offset(offset)
+
         res = await session.execute(stmt)
         rows = res.scalars().all()
         return {"count": len(rows), "items": [poi_to_dict(r) for r in rows]}
