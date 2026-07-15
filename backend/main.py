@@ -410,3 +410,9 @@ async def chat_endpoint(req: ChatRequest):
         "session_id": session_id,
         "model_meta": {"mock": True}
     }
+# include chat_openai router if present
+try:
+    from chat_openai import router as chat_router
+    app.include_router(chat_router)
+except Exception:
+    pass
