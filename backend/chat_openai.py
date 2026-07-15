@@ -124,7 +124,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                                 is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                                 if is_modern and hasattr(c, 'responses'):
                                     # Responses API expects `input` instead of messages
-                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=user_prompt, max_completion_tokens=350), timeout=30)
+                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=user_prompt, max_output_tokens=350), timeout=30)
                                 else:
                                     token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
                                     kwargs = {token_param: 350}
@@ -134,7 +134,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                         else:
                             is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                             if is_modern and hasattr(client, 'responses'):
-                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_completion_tokens=350), timeout=30)
+                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_output_tokens=350), timeout=30)
                             else:
                                 token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
                                 kwargs = {token_param: 350}
@@ -170,27 +170,54 @@ async def chat_openai(req: ChatRequest, request: Request):
 
                 # Parse response robustly for different client types
                 model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
-                content = None
-                # resp may be a mapping or object with .choices
-                choices = None
+                openai_resp_text = ""
+                # Responses API may provide `output_text` or `output` array
                 try:
-                    choices = getattr(resp, 'choices', None) or (resp.get('choices') if isinstance(resp, dict) else None)
+                    out_text = getattr(resp, 'output_text', None) or (resp.get('output_text') if isinstance(resp, dict) else None)
                 except Exception:
+                    out_text = None
+                if out_text:
+                    openai_resp_text = str(out_text).strip()
+                else:
+                    # try choices (chat.completions style)
+                    content = None
                     choices = None
-                if choices:
-                    first = choices[0]
-                    # try different shapes
-                    msg = None
                     try:
-                        msg = getattr(first, 'message', None) or (first.get('message') if isinstance(first, dict) else None)
+                        choices = getattr(resp, 'choices', None) or (resp.get('choices') if isinstance(resp, dict) else None)
                     except Exception:
+                        choices = None
+                    if choices:
+                        first = choices[0]
                         msg = None
-                    if msg:
-                        content = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else None)
+                        try:
+                            msg = getattr(first, 'message', None) or (first.get('message') if isinstance(first, dict) else None)
+                        except Exception:
+                            msg = None
+                        if msg:
+                            content = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else None)
+                        else:
+                            content = getattr(first, 'text', None) or (first.get('text') if isinstance(first, dict) else None)
+                        openai_resp_text = (content or "").strip()
                     else:
-                        # older style
-                        content = getattr(first, 'text', None) or (first.get('text') if isinstance(first, dict) else None)
-                openai_resp_text = (content or "").strip()
+                        # try Responses API detailed output structure
+                        try:
+                            out = getattr(resp, 'output', None) or (resp.get('output') if isinstance(resp, dict) else None)
+                        except Exception:
+                            out = None
+                        if out:
+                            parts = []
+                            for item in out:
+                                # each item may have 'content' array
+                                cont = item.get('content') if isinstance(item, dict) else None
+                                if cont and isinstance(cont, list):
+                                    for c in cont:
+                                        if isinstance(c, dict):
+                                            text = c.get('text') or c.get('payload') or None
+                                            if text:
+                                                parts.append(text)
+                                        elif isinstance(c, str):
+                                            parts.append(c)
+                            openai_resp_text = "\n".join(parts).strip()
                 break
             except Exception:
                 if attempt < 3:
