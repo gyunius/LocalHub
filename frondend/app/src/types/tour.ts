@@ -24,6 +24,9 @@ export interface TourItem {
   cpyrhtDivCd?: string;
   createdtime?: string;
   modifiedtime?: string;
+
+  // 추가: 런타임에서 범위 밖/오류 항목을 비활성화 표시
+  disabled?: boolean;
 }
 
 export interface TourApiResponse {
