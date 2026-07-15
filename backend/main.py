@@ -228,3 +228,6 @@ async def delete_comment(comment_id: int, password: str = Query(...)):
         await session.delete(c)
         await session.commit()
         return {"ok": True}
+
+def _check_password(stored: str, provided: str) -> bool:
+    return stored == provided
