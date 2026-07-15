@@ -27,3 +27,4 @@ class POI(Base):
 backend/venv/
 .env
 data/*.db
+backend/data/*.db
