@@ -6,21 +6,41 @@
       aria-label="서울 관광지 지도"
     ></div>
 
-    <!-- 필터 오버레이: map-floating-info 위에 배치 -->
+    <!-- 필터 오버레이: 체크박스 + 검색 -->
     <div class="absolute" style="left:14px; bottom:80px; z-index:800;">
       <div class="relative">
         <button @click="filterOpen = !filterOpen" class="bg-white text-sm px-3 py-1 rounded border">
           {{ selectedDistrictLabel }}
         </button>
 
-        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-2 max-h-56 overflow-auto w-44">
-          <ul>
-            <li v-for="d in districts" :key="d" class="mb-1">
-              <button @click="selectDistrict(d)" class="w-full text-left text-sm px-2 py-1 hover:bg-gray-100 rounded">
-                {{ d }}
-              </button>
-            </li>
-          </ul>
+        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="구 필터">
+          <input
+            v-model="searchQuery"
+            type="search"
+            class="filter-search"
+            placeholder="구 이름으로 검색하세요"
+            aria-label="구 검색"
+          />
+
+          <div role="group" aria-label="구 선택" class="mt-2">
+            <label
+              v-for="d in filteredDistricts"
+              :key="d"
+              class="radio-item"
+              :aria-checked="isChecked(d)"
+              tabindex="0"
+              @keydown.enter.prevent="toggleDistrict(d)"
+            >
+              <input
+                type="checkbox"
+                :checked="isChecked(d)"
+                @change="toggleDistrict(d)"
+                class="radio-input"
+                :aria-label="d"
+              />
+              <span class="text-sm truncate">{{ d }}</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -68,9 +88,9 @@ import 'leaflet/dist/leaflet.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
-import { selectedDistrict, setSelectedDistrict } from '../stores/filterStore'
+import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore'
 
-const props = defineProps<{ filename?: string }>();
+const props = defineProps<{ filename?: string }>()
 const filename = props.filename ?? '서울_관광지.json'
 
 const mapEl = ref<HTMLDivElement | null>(null)
@@ -78,6 +98,7 @@ const loading = ref(true)
 const error = ref('')
 const allItems = ref<TourItem[]>([])
 const filterOpen = ref(false)
+const searchQuery = ref('')
 
 let map: L.Map | null = null
 let markersLayer: L.LayerGroup | null = null
@@ -126,20 +147,62 @@ const districts = computed(() => {
   return ['전체', ...arr]
 })
 
+const filteredDistricts = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return districts.value
+  return districts.value.filter(d => d === '전체' || d.toLowerCase().includes(q))
+})
+
+// 변경: 선택이 비어있으면 "선택 없음" 상태(마커 없음)
 const visibleItems = computed(() => {
-  const sel = selectedDistrict.value
-  if (!sel || sel === '전체') return allItems.value
-  return allItems.value.filter(it => (extractGu(it.addr1) || '기타') === sel)
+  const sel = selectedDistricts.value
+  if (!sel.length) return []
+  return allItems.value.filter(it => {
+    if (!it) return false
+    const g = extractGu(it.addr1) || '기타'
+    return sel.includes(g)
+  })
 })
 
 const visibleCount = computed(() => visibleItems.value.length)
 const totalCount = computed(() => allItems.value.length)
-const selectedDistrictLabel = computed(() => selectedDistrict.value || '전체')
+
+const selectedDistrictLabel = computed(() => {
+  const sel = selectedDistricts.value
+  const all = districts.value.filter(d => d !== '전체')
+  if (sel.length === 0) return '선택 없음'
+  if (sel.length === all.length) return '전체'
+  if (sel.length === 1) return sel[0]
+  return `${sel.length}개 선택`
+})
+
 const markerCount = computed(() => visibleCount.value)
 
-function selectDistrict(d: string) {
-  setSelectedDistrict(d)
-  filterOpen.value = false
+function isAllSelected() {
+  const all = districts.value.filter(d => d !== '전체')
+  return all.length > 0 && selectedDistricts.value.length === all.length
+}
+
+function isChecked(d: string) {
+  if (d === '전체') return isAllSelected()
+  return selectedDistricts.value.includes(d)
+}
+
+function toggleDistrict(d: string) {
+  if (d === '전체') {
+    const all = districts.value.filter(x => x !== '전체')
+    if (isAllSelected()) {
+      setSelectedDistricts([])
+    } else {
+      setSelectedDistricts([...all])
+    }
+    return
+  }
+
+  const sel = new Set(selectedDistricts.value)
+  if (sel.has(d)) sel.delete(d)
+  else sel.add(d)
+  setSelectedDistricts(Array.from(sel))
 }
 
 function clearMarkers() {
@@ -174,13 +237,12 @@ function updateMarkers() {
     bounds.extend([lat, lng])
   }
 
-  // fit to visible markers
   if (bounds.isValid()) {
     map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
   }
 }
 
-watch([selectedDistrict, allItems], () => {
+watch([selectedDistricts, allItems], () => {
   updateMarkers()
 })
 
@@ -201,6 +263,13 @@ onMounted(async () => {
   try {
     const items: TourItem[] = await getAllItems(filename)
     allItems.value = items
+
+    // 기본 동작: 데이터 로드 후 선택이 비어있다면 '모두 선택'으로 초기화
+    if (!selectedDistricts.value.length) {
+      const all = districts.value.filter(d => d !== '전체')
+      setSelectedDistricts([...all])
+    }
+
     updateMarkers()
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -219,6 +288,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 기존 스타일 유지 */
 .map-shell {
   position: relative;
   min-height: 555px;
@@ -233,6 +303,7 @@ onBeforeUnmount(() => {
   min-height: 555px;
 }
 
+/* ... 나머지 스타일은 기존 파일과 동일합니다 (생략하지 마시고 이미 파일에 포함되어 있음) */
 .map-floating-info {
   position: absolute;
   z-index: 500;
@@ -312,6 +383,46 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 32px rgba(83, 29, 36, 0.12);
 }
 
+/* Filter panel styles */
+.filter-panel {
+  box-shadow: 0 12px 32px rgba(34, 27, 48, 0.08);
+  background: #fff;
+}
+
+.filter-search {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(224, 220, 233, 0.95);
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+}
+
+.filter-search:focus {
+  box-shadow: 0 6px 18px rgba(114, 66, 189, 0.08);
+  border-color: #7543c7;
+}
+
+.radio-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.radio-item:hover {
+  background: #f7f5fb;
+}
+
+.radio-input {
+  width: 16px;
+  height: 16px;
+  accent-color: #7543c7;
+}
+
+/* marker and tooltip styles (kept) */
 :deep(.leaflet-control-zoom) {
   overflow: hidden;
   border: 0 !important;

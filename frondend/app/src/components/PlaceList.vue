@@ -68,7 +68,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import type { TourItem } from '../types/tour';
 import { getAllItems } from '../services/tourService';
 import PlaceCard from './PlaceCard.vue';
-import { selectedDistrict } from '../stores/filterStore';
+import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore';
 
 const props = defineProps<{ filename?: string; pageSize?: number }>();
 const filename = props.filename ?? '서울_관광지.json';
@@ -87,12 +87,14 @@ function extractGu(addr?: string): string | null {
   return m ? m[1] : null;
 }
 
+// 변경: 선택이 비어있으면 "선택 없음" 상태(목록 없음)
 const filteredItems = computed(() => {
-  const sel = selectedDistrict.value;
+  const sel = selectedDistricts.value;
+  if (!sel.length) return [];
   return allItems.value.filter((it) => {
     if (!it) return false;
     const g = extractGu(it.addr1) || '기타';
-    return sel === '전체' || sel === g;
+    return sel.includes(g);
   });
 });
 
@@ -107,6 +109,17 @@ async function loadAll() {
   loading.value = true;
   try {
     allItems.value = await getAllItems(filename);
+
+    // 기본 동작: 데이터 로드 후 선택이 비어있다면 '모두 선택'으로 초기화
+    if (!selectedDistricts.value.length) {
+      const s = new Set<string>();
+      for (const it of allItems.value) {
+        const g = extractGu(it.addr1) || '기타';
+        s.add(g);
+      }
+      const all = Array.from(s).sort((a, b) => a.localeCompare(b, 'ko'));
+      setSelectedDistricts(all);
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -157,11 +170,9 @@ onBeforeUnmount(() => {
 
 .place-list-meta {
   padding: 14px 20px 10px;
-
   display: flex;
   align-items: center;
   justify-content: space-between;
-
   color: #8a92a3;
   font-size: 11px;
   font-weight: 700;
@@ -170,23 +181,19 @@ onBeforeUnmount(() => {
 .place-scroller {
   max-height: 560px;
   padding: 4px 12px 12px;
-
   overflow-y: auto;
 }
 
 .place-list {
   margin: 0;
   padding: 0;
-
   display: grid;
   gap: 10px;
-
   list-style: none;
 }
 
 .list-status {
   padding: 18px 8px 8px;
-
   color: #a0a6b2;
   text-align: center;
   font-size: 10px;
