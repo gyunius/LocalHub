@@ -100,3 +100,12 @@ sqlite3 db.sqlite3 "SELECT count(*) FROM tour_spots_fts;"
 * [ ] [http://localhost:8000/docs](http://localhost:8000/docs) 에서 `POST /api/chat` 호출 및 정상 응답 확인
 * [ ] FTS/POI에 데이터가 정상적으로 채워졌을 때 `sources` 배열 안에 적절한 장소 리스트가 매핑되어 오는지 확인
 * [ ] 필수 값이 없거나 형식이 깨졌을 때의 에러(400/500) 케이스에 대해 프론트엔드가 앱 내에서 충돌 없이 에러 메시지를 띄우는지 검증
+
+## POST /api/chat_openai
+
+* **설명**: OpenAI API 키가 설정되어 있으면 실제 LLM을 사용해 응답을 생성합니다. 키가 없으면 기존 mock/fallback 동작을 사용합니다.
+
+* **환경 변수**: `OPENAI_API_KEY` — 실 사용 시 백엔드 환경에 설정하세요. `.env.example` 파일이 저장소 루트에 추가되어 있습니다.
+
+* **레이트리밋**: 개발용으로 간단한 in-memory 레이트리밋을 적용했습니다. 초과 시 `429` 응답을 반환합니다.
+
