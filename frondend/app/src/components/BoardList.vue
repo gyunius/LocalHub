@@ -241,13 +241,31 @@ async function loadAll() {
   loading.value = true
 
   try {
-    const response = await fetch(`/data/${filename}`)
-
-    if (!response.ok) {
-      throw new Error('Failed to load posts')
+    let data: any = null
+    if (typeof filename === 'string' && filename.startsWith('/api')) {
+      const res = await fetch(filename)
+      if (!res.ok) throw new Error('Failed to load posts from API')
+      const json = await res.json()
+      // backend returns {count, items}
+      data = Array.isArray(json) ? json : (json.items ?? [])
+    } else {
+      const response = await fetch(`/data/${filename}`)
+      if (!response.ok) throw new Error('Failed to load posts')
+      data = await response.json()
     }
 
-    allPosts.value = await response.json()
+    // normalize backend shape -> frontend expects `content` field
+    if (Array.isArray(data)) {
+      allPosts.value = data.map((it: any) => ({
+        id: String(it.id ?? it.id),
+        title: it.title ?? it.title,
+        content: it.content ?? it.body ?? it.text ?? '',
+        created_at: it.created_at ?? it.createdAt ?? it.created_at,
+        views: it.views ?? 0,
+      }))
+    } else {
+      allPosts.value = data
+    }
 
     const initial: Record<string, number> = {}
 

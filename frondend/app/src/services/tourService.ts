@@ -21,9 +21,32 @@ function parseNum(v?: unknown): number | null {
 export async function fetchTourData(filename: string): Promise<TourApiResponse> {
   const key = filename;
   if (cache.has(key)) return cache.get(key)!;
-  const res = await fetch(`/data/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw new Error(`Failed to load ${filename} (${res.status})`);
-  const json = (await res.json()) as TourApiResponse;
+  // Try backend API first (proxied to backend by Vite dev server), fallback to static public data
+  let json: any = null;
+  try {
+    const apiRes = await fetch(`/api/pois?limit=10000`);
+    if (apiRes.ok) {
+      const apiJson = await apiRes.json();
+      // apiJson.items is list of POI objects -- convert to TourApiResponse shape
+      const items = (apiJson.items || []).map((it: any) => ({
+        ...it,
+        contentid: it.contentid,
+        title: it.title,
+        mapx: it.mapx,
+        mapy: it.mapy,
+        addr1: it.addr1,
+      }));
+      json = { items };
+    }
+  } catch (e) {
+    // ignore and fallback
+  }
+
+  if (!json) {
+    const res = await fetch(`/data/${encodeURIComponent(filename)}`);
+    if (!res.ok) throw new Error(`Failed to load ${filename} (${res.status})`);
+    json = await res.json();
+  }
 
   if (Array.isArray(json.items)) {
     const sanitized: TourItem[] = [];

@@ -85,6 +85,10 @@ import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+// markercluster
+import 'leaflet.markercluster/dist/leaflet.markercluster.js'
+import 'leaflet.markercluster/dist/MarkerCluster.css'
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
@@ -101,9 +105,46 @@ const filterOpen = ref(false)
 const searchQuery = ref('')
 
 let map: L.Map | null = null
-let markersLayer: L.LayerGroup | null = null
+let markersLayer: any = null
+let initialFitDone = false
 
 const router = useRouter()
+
+let fetchTimer: number | null = null
+const DEBOUNCE_MS = 300
+
+async function fetchPoisForBounds(bounds: L.LatLngBounds) {
+  const pad = 0.06
+  const sw = bounds.getSouthWest()
+  const ne = bounds.getNorthEast()
+  const minLat = sw.lat - (ne.lat - sw.lat) * pad
+  const minLng = sw.lng - (ne.lng - sw.lng) * pad
+  const maxLat = ne.lat + (ne.lat - sw.lat) * pad
+  const maxLng = ne.lng + (ne.lng - sw.lng) * pad
+
+  const bbox = [minLng, minLat, maxLng, maxLat].map((v) => v.toFixed(6)).join(',')
+
+  try {
+    // increase limit to fetch more points when user requested
+    const res = await fetch(`/api/pois?bbox=${encodeURIComponent(bbox)}&limit=10000`)
+    if (res.ok) {
+      const json = await res.json()
+      const items = json.items || []
+      allItems.value = items
+      return
+    }
+  } catch (e) {
+    // ignore and fallback
+  }
+
+  // fallback to static loader
+  try {
+    const data = await getAllItems(filename)
+    allItems.value = data
+  } catch (e) {
+    error.value = '관광지 데이터를 불러오지 못했습니다.'
+  }
+}
 
 const markerIcon = L.divIcon({
   className: 'localhub-marker-wrapper',
@@ -120,9 +161,12 @@ const markerIcon = L.divIcon({
   tooltipAnchor: [0, -34],
 })
 
-function toNumber(value?: string) {
-  if (!value) return Number.NaN
-  const parsed = Number.parseFloat(value.replace(/,/g, ''))
+function toNumber(value?: string | number) {
+  if (value === undefined || value === null) return Number.NaN
+  if (typeof value === 'number') return Number.isFinite(value) ? value : Number.NaN
+  const s = String(value).trim()
+  if (!s) return Number.NaN
+  const parsed = Number.parseFloat(s.replace(/,/g, ''))
   return Number.isFinite(parsed) ? parsed : Number.NaN
 }
 
@@ -206,7 +250,7 @@ function toggleDistrict(d: string) {
 }
 
 function clearMarkers() {
-  if (markersLayer) markersLayer.clearLayers()
+  if (markersLayer && markersLayer.clearLayers) markersLayer.clearLayers()
 }
 
 function updateMarkers() {
@@ -220,7 +264,7 @@ function updateMarkers() {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
 
     const marker = L.marker([lat, lng], { icon: markerIcon, keyboard: true, title: item.title || '관광지' })
-      .addTo(markersLayer)
+    markersLayer.addLayer(marker)
 
     marker.bindTooltip(
       `
@@ -238,7 +282,13 @@ function updateMarkers() {
   }
 
   if (bounds.isValid()) {
-    map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
+    // Only auto-fit on initial load (or when no previous fit done).
+    // Prevents snapping back when user manually zooms/pans.
+    if (!initialFitDone) {
+      map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
+      initialFitDone = true
+    }
+    // If desired: else if map viewport does not contain bounds, consider fitting.
   }
 }
 
@@ -258,11 +308,18 @@ onMounted(async () => {
     maxZoom: 19,
   }).addTo(map)
 
-  markersLayer = L.layerGroup().addTo(map)
+  // use marker cluster group with chunked loading for large datasets
+  // @ts-ignore
+  markersLayer = L.markerClusterGroup({ chunkedLoading: true, chunkProgress: (processed, total, node) => {} })
+  markersLayer.addTo(map)
+
+  map.on('moveend', onMapMove)
+  map.on('zoomend', onMapMove)
 
   try {
-    const items: TourItem[] = await getAllItems(filename)
-    allItems.value = items
+    // initial fetch based on current map bounds
+    const bounds = map.getBounds()
+    await fetchPoisForBounds(bounds)
 
     // 기본 동작: 데이터 로드 후 선택이 비어있다면 '모두 선택'으로 초기화
     if (!selectedDistricts.value.length) {
@@ -285,6 +342,16 @@ onBeforeUnmount(() => {
   map?.remove()
   map = null
 })
+
+// listen to map moveend to fetch new pois (debounced)
+function onMapMove() {
+  if (!map) return
+  if (fetchTimer) clearTimeout(fetchTimer)
+  fetchTimer = window.setTimeout(() => {
+    if (!map) return
+    void fetchPoisForBounds(map.getBounds())
+  }, DEBOUNCE_MS)
+}
 </script>
 
 <style scoped>

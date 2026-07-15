@@ -50,7 +50,7 @@ def poi_to_dict(r: POI):
     }
 
 @app.get("/api/pois")
-async def list_pois(q: str | None = Query(None), region: str | None = None, contenttypeid: str | None = None, limit: int = 20, offset: int = 0):
+async def list_pois(q: str | None = Query(None), region: str | None = None, contenttypeid: str | None = None, bbox: str | None = None, limit: int = 20, offset: int = 0):
     async with AsyncSessionLocal() as session:
         if q:
             # FTS search to get contentids
@@ -62,6 +62,18 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
             stmt = select(POI).where(POI.contentid.in_(contentids))
         else:
             stmt = select(POI)
+
+            # bbox: expected format 'minLng,minLat,maxLng,maxLat'
+            if bbox:
+                try:
+                    parts = [float(x) for x in bbox.split(',')]
+                    if len(parts) == 4:
+                        minx, miny, maxx, maxy = parts
+                        stmt = stmt.where(POI.mapx >= minx, POI.mapx <= maxx, POI.mapy >= miny, POI.mapy <= maxy)
+                except Exception:
+                    # ignore invalid bbox and fall back to broader query
+                    pass
+
             if region:
                 stmt = stmt.where(POI.region == region)
             if contenttypeid:
@@ -71,6 +83,15 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
         res = await session.execute(stmt)
         rows = res.scalars().all()
         return {"count": len(rows), "items": [poi_to_dict(r) for r in rows]}
+
+
+@app.on_event("startup")
+async def ensure_indexes():
+    # create indexes for mapx/mapy to speed up bbox queries
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_poi_mapx ON poi(mapx);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_poi_mapy ON poi(mapy);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_poi_mapxy ON poi(mapx, mapy);"))
 
 @app.get("/api/pois/{contentid}")
 async def get_poi(contentid: str):
@@ -177,45 +198,47 @@ async def update_post(post_id: int, payload: dict = Body(...)):
         return {"ok": True}
 
 
-    # Views sync endpoint used by frontend optimistic queue
-    @app.post("/api/posts/{post_id}/views")
-    async def post_views(post_id: int, payload: dict = Body(...)):
-        delta = payload.get("delta")
-        try:
-            delta = int(delta or 0)
-        except Exception:
-            delta = 0
-        if delta == 0:
-            async with AsyncSessionLocal() as session:
-                p = await session.get(Post, post_id)
-                if not p:
-                    raise HTTPException(status_code=404, detail="Not found")
-                return {"ok": True, "views": getattr(p, 'views', 0)}
+    # end update_post
 
+# Views sync endpoint used by frontend optimistic queue
+@app.post("/api/posts/{post_id}/views")
+async def post_views(post_id: int, payload: dict = Body(...)):
+    delta = payload.get("delta")
+    try:
+        delta = int(delta or 0)
+    except Exception:
+        delta = 0
+    if delta == 0:
         async with AsyncSessionLocal() as session:
             p = await session.get(Post, post_id)
             if not p:
                 raise HTTPException(status_code=404, detail="Not found")
-            p.views = (p.views or 0) + delta
-            session.add(p)
-            await session.commit()
-            await session.refresh(p)
-            return {"ok": True, "views": p.views}
+            return {"ok": True, "views": getattr(p, 'views', 0)}
+
+    async with AsyncSessionLocal() as session:
+        p = await session.get(Post, post_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Not found")
+        p.views = (p.views or 0) + delta
+        session.add(p)
+        await session.commit()
+        await session.refresh(p)
+        return {"ok": True, "views": p.views}
 
 
-    # Password verification endpoint used by frontend
-    @app.post("/api/posts/{post_id}/verify")
-    async def verify_post_password(post_id: int, payload: dict = Body(...)):
-        password = payload.get("password")
-        if not password:
-            raise HTTPException(status_code=400, detail="password required")
-        async with AsyncSessionLocal() as session:
-            p = await session.get(Post, post_id)
-            if not p:
-                raise HTTPException(status_code=404, detail="Not found")
-            if _check_password(p.password, password):
-                return {"ok": True}
-            raise HTTPException(status_code=403, detail="Forbidden")
+# Password verification endpoint used by frontend
+@app.post("/api/posts/{post_id}/verify")
+async def verify_post_password(post_id: int, payload: dict = Body(...)):
+    password = payload.get("password")
+    if not password:
+        raise HTTPException(status_code=400, detail="password required")
+    async with AsyncSessionLocal() as session:
+        p = await session.get(Post, post_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Not found")
+        if _check_password(p.password, password):
+            return {"ok": True}
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 @app.delete("/api/posts/{post_id}")
 async def delete_post(post_id: int, password: str = Query(None), payload: dict = Body(None)):

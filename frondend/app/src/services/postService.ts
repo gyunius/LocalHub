@@ -134,7 +134,16 @@ export async function fetchPosts(page = 1, limit = 20): Promise<PostItem[]> {
 export async function fetchPost(id: string): Promise<PostItem> {
   const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const json = await res.json();
+  // normalize backend `body` -> frontend `content`
+  return {
+    id: String(json.id),
+    title: json.title,
+    content: json.body ?? json.content ?? '',
+    created_at: json.created_at,
+    views: json.views,
+    ...json,
+  } as PostItem
 }
 
 export async function createPost(payload: { title: string; content: string; password: string; }): Promise<PostItem> {

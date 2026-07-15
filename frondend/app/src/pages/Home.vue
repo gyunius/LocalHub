@@ -80,7 +80,7 @@
 
         <div class="soft-divider"></div>
 
-        <BoardList filename="mock_posts.json" :page-size="3" />
+        <BoardList filename="/api/posts?limit=20" :page-size="3" />
       </aside>
 
       <section class="map-panel surface-card">
