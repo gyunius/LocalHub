@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
-from models import Base, POI, Post, Comment
+from models import Base, POI
 
 def make_db_url(db_path: Path) -> str:
     p = db_path.resolve()

@@ -5,8 +5,9 @@ from pathlib import Path
 import os
 from datetime import datetime
 import json
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from uuid import uuid4
+from typing import Optional, List
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -336,3 +337,76 @@ class CommentCreate(BaseModel):
     author: Optional[str] = None
     password: str
     body: str
+
+# Chat endpoint
+class ChatRequest(BaseModel):
+    message: str = Field(..., max_length=2000)
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    context: Optional[list] = None
+    bbox: Optional[str] = None
+    top_k: Optional[int] = 5
+    use_search: Optional[bool] = True
+
+class POISource(BaseModel):
+    contentid: str
+    title: Optional[str] = None
+    addr1: Optional[str] = None
+    mapx: Optional[float] = None
+    mapy: Optional[float] = None
+    score: Optional[float] = None
+
+class ChatResponse(BaseModel):
+    id: str
+    reply: str
+    sources: List[POISource] = []
+    session_id: Optional[str] = None
+    model_meta: Optional[dict] = None
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    if not req.message or not req.message.strip():
+        raise HTTPException(status_code=400, detail="message required")
+
+    # 기본 응답 id / session echo
+    resp_id = str(uuid4())
+    session_id = req.session_id or resp_id
+
+    sources = []
+    if req.use_search:
+        # 간단 FTS 검색: 기존 list_pois와 유사한 방식 사용 (mock 목적)
+        q = req.message
+        top_k = min(max(1, int(req.top_k or 5)), 50)
+
+        async with AsyncSessionLocal() as session:
+            try:
+                sql = text("SELECT contentid FROM poi_fts WHERE poi_fts MATCH :q LIMIT :lim")
+                res = await session.execute(sql.bindparams(q=q, lim=top_k))
+                contentids = [row[0] for row in res.fetchall()]
+                if contentids:
+                    stmt = select(POI).where(POI.contentid.in_(contentids)).limit(top_k)
+                    r = await session.execute(stmt)
+                    rows = r.scalars().all()
+                    for p in rows:
+                        sources.append({
+                            "contentid": p.contentid,
+                            "title": p.title,
+                            "addr1": p.addr1,
+                            "mapx": p.mapx,
+                            "mapy": p.mapy,
+                            "score": None
+                        })
+            except Exception:
+                # 검색 실패시 빈 sources로 계속 진행 (mock)
+                sources = []
+
+    # Mock assistant reply (프론트 개발용)
+    reply_text = f"[mock reply] 찾은 장소 수: {len(sources)}. 원문: {req.message[:200]}"
+
+    return {
+        "id": resp_id,
+        "reply": reply_text,
+        "sources": sources,
+        "session_id": session_id,
+        "model_meta": {"mock": True}
+    }
