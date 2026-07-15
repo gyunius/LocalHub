@@ -127,6 +127,18 @@
         </div>
 
         <MapView ref="mapViewRef" :routeMode="routeMode" :editingRoute="composing" @route-changed="onRouteChanged" />
+        
+          <!-- Chat widget floating launcher -->
+          <div class="chat-fab-wrapper">
+            <button class="chat-fab" @click="toggleChat" aria-label="챗봇 열기">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div v-if="showChat" class="chat-popup">
+              <ChatWidget />
+            </div>
+          </div>
       </section>
     </section>
   </div>
@@ -137,6 +149,10 @@ import { ref } from 'vue'
 import BoardList from '../components/BoardList.vue'
 import MapView from '../components/MapView.vue'
 import PostForm from './PostForm.vue'
+import ChatWidget from '../components/ChatWidget.vue'
+
+const showChat = ref(false)
+function toggleChat() { showChat.value = !showChat.value }
 
 // route selection mode (지도에서 장소를 선택하는 모드)
 const routeMode = ref(false)
@@ -346,6 +362,7 @@ function onComposerSubmitted() {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
+  position: relative; /* anchor for chat fab */
 }
 
 .map-panel-header {
@@ -422,5 +439,37 @@ function onComposerSubmitted() {
   .map-panel-header {
     padding: 10px 10px 14px;
   }
+}
+
+/* Chat FAB + popup */
+.chat-fab-wrapper {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.chat-fab {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(75,39,143,0.15);
+  background: linear-gradient(135deg,#6b3bb4,#4b65bf);
+  color: #fff;
+}
+.chat-popup {
+  margin-top: 10px;
+  width: min(420px, 92vw);
+}
+
+@media (max-width: 640px) {
+  .chat-fab-wrapper { right: 12px; bottom: 12px }
+  .chat-popup { width: 92vw }
 }
 </style>
