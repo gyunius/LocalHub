@@ -134,9 +134,10 @@ async def chat_openai(req: ChatRequest, request: Request):
                     except Exception:
                         resp = None
 
-                # Legacy fallback for very old openai versions
-                if resp is None and getattr(openai, 'ChatCompletion', None) is not None:
-                    resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+                # Do not call legacy openai.ChatCompletion for openai>=1.0; rely on AsyncOpenAI/OpenAI
+                # If neither client produced a response, raise to outer handler and report error
+                if resp is None:
+                    raise RuntimeError("no compatible OpenAI client available or client call failed")
 
                 # Parse response robustly for different client types
                 model_meta = {"provider":"openai","model": getattr(resp, 'model', 'gpt-3.5-turbo')}
