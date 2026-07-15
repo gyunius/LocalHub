@@ -4,8 +4,10 @@ from collections import deque
 
 try:
     import openai
+    AsyncOpenAI = getattr(openai, "AsyncOpenAI", None)
 except Exception:
     openai = None
+    AsyncOpenAI = None
 
 from pydantic import BaseModel
 from uuid import uuid4
@@ -107,7 +109,23 @@ async def chat_openai(req: ChatRequest, request: Request):
         while attempt < 3:
             attempt += 1
             try:
-                resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                resp = None
+                # Prefer async client if available
+                if AsyncOpenAI is not None:
+                    try:
+                        client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else AsyncOpenAI()
+                        if hasattr(client, "__aenter__"):
+                            async with client as c:
+                                resp = await asyncio.wait_for(c.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                        else:
+                            resp = await asyncio.wait_for(client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                    except Exception:
+                        resp = None
+
+                # Fallback to thread-wrapped sync API if async client not available or failed
+                if resp is None:
+                    resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+
                 model_meta = {"provider":"openai","model": getattr(resp, 'model', 'gpt-3.5-turbo')}
                 choice = resp.choices[0] if getattr(resp, 'choices', None) else None
                 content = None
