@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 from models import Base, POI
 
 def make_db_url(db_path: Path) -> str:
@@ -119,8 +120,50 @@ async def migrate(data_dir: Path, db_path: Path, dry_run=False, sample=None):
             print(f"Processed {processed} items from {f.name}")
             total += processed
 
+    # rebuild FTS index after data load
+    if not dry_run:
+        try:
+            await rebuild_fts(engine)
+            print("FTS index rebuilt.")
+        except Exception as e:
+            print(f"Failed to rebuild FTS: {e}")
+
     await engine.dispose()
     print(f"Migration complete. Total processed: {total}")
+
+async def rebuild_fts(engine):
+    # create and populate a simple FTS5 table for POI
+    async with engine.begin() as conn:
+        # inspect existing poi columns to avoid mismatches
+        res = await conn.execute(text("PRAGMA table_info(poi)"))
+        cols = [row[1] for row in res.fetchall()]
+        # choose searchable fields present in the table
+        default_fields = ["contentid", "title", "addr1", "addr2", "tel", "raw_json"]
+        present = [f for f in default_fields if f in cols]
+        if not present:
+            # nothing to index
+            return
+
+        # build FTS create statement with present fields (contentid unindexed if present)
+        field_defs = []
+        for f in present:
+            if f == "contentid":
+                field_defs.append("contentid UNINDEXED")
+            else:
+                field_defs.append(f)
+
+        # drop existing FTS table to ensure schema matches
+        await conn.execute(text("DROP TABLE IF EXISTS poi_fts"))
+        create_stmt = f"CREATE VIRTUAL TABLE poi_fts USING fts5({', '.join(field_defs)}, tokenize='unicode61');"
+        await conn.execute(text(create_stmt))
+
+        # clear and repopulate
+        await conn.execute(text("DELETE FROM poi_fts"))
+
+        select_cols = ", ".join([f"COALESCE({c},'')" for c in present])
+        insert_cols = ", ".join(present)
+        insert_sql = f"INSERT INTO poi_fts({insert_cols}) SELECT {select_cols} FROM poi"
+        await conn.execute(text(insert_sql))
 
 def default_paths():
     here = Path(__file__).parent
@@ -134,6 +177,7 @@ async def main():
     parser.add_argument("--db-path", help="SQLite DB file path")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--sample", type=int, help="limit items per file (test)")
+    parser.add_argument("--rebuild-fts", action="store_true", help="Only rebuild FTS index after migration")
     args = parser.parse_args()
 
     load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -144,6 +188,16 @@ async def main():
         raise SystemExit(f"data-dir not found: {data_dir}")
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.rebuild_fts:
+        db_url = make_db_url(db_path)
+        engine = create_async_engine(db_url, echo=False)
+        try:
+            await rebuild_fts(engine)
+            print("FTS rebuild completed.")
+        finally:
+            await engine.dispose()
+        return
 
     await migrate(data_dir, db_path, dry_run=args.dry_run, sample=args.sample)
 
