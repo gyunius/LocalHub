@@ -60,6 +60,15 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
             res = await session.execute(sql.bindparams(q=q, lim=limit, off=offset))
             contentids = [row[0] for row in res.fetchall()]
             if not contentids:
+                # FTS returned no rows — fallback to simple LIKE on title/addr1
+                try:
+                    pattern = f"%{q}%"
+                    like_sql = text("SELECT contentid FROM poi WHERE (title LIKE :p OR addr1 LIKE :p) LIMIT :lim OFFSET :off")
+                    r2 = await session.execute(like_sql.bindparams(p=pattern, lim=limit, off=offset))
+                    contentids = [row[0] for row in r2.fetchall()]
+                except Exception:
+                    contentids = []
+            if not contentids:
                 return {"count": 0, "items": []}
             stmt = select(POI).where(POI.contentid.in_(contentids))
         else:
@@ -383,6 +392,15 @@ async def chat_endpoint(req: ChatRequest):
                 sql = text("SELECT contentid FROM poi_fts WHERE poi_fts MATCH :q LIMIT :lim")
                 res = await session.execute(sql.bindparams(q=q, lim=top_k))
                 contentids = [row[0] for row in res.fetchall()]
+                if not contentids:
+                    # FTS empty -> fallback to LIKE
+                    try:
+                        pattern = f"%{q}%"
+                        like_sql = text("SELECT contentid FROM poi WHERE title LIKE :p OR addr1 LIKE :p LIMIT :lim")
+                        r2 = await session.execute(like_sql.bindparams(p=pattern, lim=top_k))
+                        contentids = [row[0] for row in r2.fetchall()]
+                    except Exception:
+                        contentids = []
                 if contentids:
                     stmt = select(POI).where(POI.contentid.in_(contentids)).limit(top_k)
                     r = await session.execute(stmt)
