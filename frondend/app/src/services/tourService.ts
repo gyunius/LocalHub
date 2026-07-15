@@ -23,13 +23,10 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 export async function fetchTourData(filename: string): Promise<TourApiResponse> {
   const key = filename;
   if (cache.has(key)) return cache.get(key)!;
->>>>>>> feature/backend-api-sync
->>>>>>> feature/backend-api-sync
 
   let json: TourApiResponse;
 
-  // 1) 먼저 API 시도 (백엔드가 제공하면 여기로)
-  // Try backend API first: /api/pois returns POI items
+  // API 우선: /api/pois에서 가능한 경우 데이터를 가져옵니다.
   try {
     const apiRes = await fetch(`/api/pois?limit=10000`);
     if (apiRes.ok) {
@@ -44,7 +41,7 @@ export async function fetchTourData(filename: string): Promise<TourApiResponse> 
       }));
       json = { items } as unknown as TourApiResponse;
     } else {
-      throw new Error('API not ok')
+      throw new Error('API not ok');
     }
   } catch {
     const res = await fetch(`/data/${encodeURIComponent(filename)}`);
