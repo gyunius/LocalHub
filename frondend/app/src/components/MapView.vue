@@ -104,7 +104,7 @@
           type="button"
           class="btn-sm"
           style="margin-left:8px"
-          @click="() => router.push({ name: 'Place', params: { id: activeItem.contentid } })"
+          @click="goToPlace(activeItem.contentid)"
         >
           자세히 보기
         </button>
@@ -166,6 +166,23 @@ let fetchTimer: number | null = null
 const DEBOUNCE_MS = 300
 const CLUSTER_MIN_SIZE = 6 // 6 이상일 때만 클러스터링 (<=5는 개별 마커)
 const CLUSTER_RADIUS_PX = 60 // 픽셀 기준 반경 (필요시 조절)
+
+const STORAGE_KEY = 'localhub.mapview'
+
+function saveMapView() {
+  if (!map) return
+  try {
+    const c = map.getCenter()
+    const z = map.getZoom()
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: z, ts: Date.now() }))
+  } catch (e) {}
+}
+
+function goToPlace(id: string | number) {
+  saveMapView()
+  sessionStorage.setItem('localhub.restoreOnReturn', '1')
+  router.push({ name: 'Place', params: { id } })
+}
 
 async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const pad = 0.06
@@ -400,7 +417,16 @@ onMounted(async () => {
   if (!mapEl.value) return
 
   map = L.map(mapEl.value, { preferCanvas: true, zoomControl: false, attributionControl: true }).setView([37.5665, 126.978], 11)
-
+  const saved = sessionStorage.getItem(STORAGE_KEY)
+  if (saved) {
+    try {
+      const s = JSON.parse(saved)
+      if (s && Number.isFinite(s.lat) && Number.isFinite(s.lng) && Number.isFinite(s.zoom)) {
+        map.setView([s.lat, s.lng], s.zoom)
+        initialFitDone = true
+      }
+    } catch (e) {}
+  }
   L.control.zoom({ position: 'topright' }).addTo(map)
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -418,6 +444,8 @@ onMounted(async () => {
 
   map.on('moveend', onMapMove)
   map.on('zoomend', onMapMove)
+  map.on('moveend', saveMapView)
+  map.on('zoomend', saveMapView)
   map.on('click', () => { activeItem.value = null })
 
   try {
@@ -443,6 +471,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  saveMapView()
   map?.remove()
   map = null
 })
