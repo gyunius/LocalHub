@@ -18,18 +18,31 @@ function parseNum(v?: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
+
 export async function fetchTourData(filename: string): Promise<TourApiResponse> {
   const key = filename;
   if (cache.has(key)) return cache.get(key)!;
-  const res = await fetch(`/data/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw new Error(`Failed to load ${filename} (${res.status})`);
-  const json = (await res.json()) as TourApiResponse;
 
+  let json: TourApiResponse;
+
+  // 1) 먼저 API 시도 (백엔드가 제공하면 여기로)
+  try {
+    const apiRes = await fetch(`${API_BASE}/tours?filename=${encodeURIComponent(filename)}`);
+    if (!apiRes.ok) throw new Error(`API error ${apiRes.status}`);
+    json = (await apiRes.json()) as TourApiResponse;
+  } catch {
+    // 2) API 실패하면 정적 파일로 폴백
+    const res = await fetch(`/data/${encodeURIComponent(filename)}`);
+    if (!res.ok) throw new Error(`Failed to load ${filename} (${res.status})`);
+    json = (await res.json()) as TourApiResponse;
+  }
+
+  // 기존 정제 로직 재사용
   if (Array.isArray(json.items)) {
     const sanitized: TourItem[] = [];
 
     for (const it of json.items) {
-      // 핵심 필드 없으면 제거
       if (!it || !it.contentid || !it.title) continue;
 
       const lat = parseNum(it.mapy);
@@ -40,7 +53,6 @@ export async function fetchTourData(filename: string): Promise<TourApiResponse> 
         lat >= BOUNDS.latMin && lat <= BOUNDS.latMax &&
         lng >= BOUNDS.lngMin && lng <= BOUNDS.lngMax;
 
-      // 원본 손상 방지용 얕은 복사 + disabled 플래그
       const copy: TourItem = { ...it, disabled: !inBounds };
       sanitized.push(copy);
     }
