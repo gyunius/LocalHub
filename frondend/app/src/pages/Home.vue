@@ -90,21 +90,73 @@
             <h2 class="panel-title">서울 관광 지도</h2>
           </div>
 
+          <div class="map-panel-actions">
+            <button
+              type="button"
+              :class="['btn', routeMode ? 'btn-inverted' : 'btn-primary']"
+              @click="onCreateRoute"
+            >
+              {{ routeMode ? '코스 선택 완료' : '여행 경로 만들기' }}
+            </button>
+          </div>
+
           <div class="status-chip">
             <span class="status-dot"></span>
             관광지 데이터 연결됨
           </div>
         </div>
 
-        <MapView />
+        <MapView ref="mapViewRef" :routeMode="routeMode" @route-changed="onRouteChanged" />
       </section>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import BoardList from '../components/BoardList.vue'
 import MapView from '../components/MapView.vue'
+
+const router = useRouter()
+const routeMode = ref(false)
+const currentRoute = ref<any[]>([])
+const mapViewRef = ref<any>(null)
+
+function onCreateRoute() {
+  // start selecting
+  if (!routeMode.value) {
+    routeMode.value = true
+    return
+  }
+
+  // finish selecting -> export selection + map state, 저장 후 글쓰기 페이지로 이동
+  const exportData = mapViewRef.value?.exportSelection?.()
+  const selected = exportData?.routeList ?? currentRoute.value ?? []
+  const mapView = exportData?.mapView ?? null
+
+  if (!selected || selected.length === 0) {
+    routeMode.value = false
+    alert('선택한 장소가 없습니다.')
+    return
+  }
+
+  try {
+    sessionStorage.setItem('localhub.routeSelection', JSON.stringify(selected))
+    if (mapView) sessionStorage.setItem('localhub.mapview', JSON.stringify({ ...mapView, ts: Date.now() }))
+  } catch (e) {}
+
+  // turn off selection mode (MapView will clear its internal routeList)
+  routeMode.value = false
+
+  // 이동: 새 글 쓰기 페이지
+  router.push({ name: 'PostNew' })
+}
+
+function onRouteChanged(list: any[]) {
+  currentRoute.value = list
+  console.log('route list updated', list)
+}
 </script>
 
 <style scoped>
@@ -240,8 +292,29 @@ import MapView from '../components/MapView.vue'
   gap: 18px;
 }
 
+.map-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .map-panel-header .panel-title {
   margin-top: 3px;
+}
+
+.btn-inverted {
+  background-color: #ffffff;
+  color: transparent;
+  background-image: linear-gradient(135deg, var(--brand-600), var(--brand-800));
+  -webkit-background-clip: text;
+  background-clip: text;
+  border: 1px solid rgba(75, 39, 143, 0.08);
+  box-shadow: none;
+}
+
+.btn-inverted:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(96, 50, 173, 0.12);
 }
 
 @media (max-width: 960px) {

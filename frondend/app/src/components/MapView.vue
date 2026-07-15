@@ -135,7 +135,6 @@ import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-// markercluster
 import 'leaflet.markercluster/dist/leaflet.markercluster.js'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
@@ -144,7 +143,11 @@ import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
 import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore'
 
-const props = defineProps<{ filename?: string }>()
+const props = defineProps<{ filename?: string; routeMode?: boolean }>()
+const emit = defineEmits<{
+  (e: 'route-changed', route: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>): void
+}>()
+
 const filename = props.filename ?? '서울_관광지.json'
 
 const mapEl = ref<HTMLDivElement | null>(null)
@@ -164,8 +167,8 @@ const router = useRouter()
 
 let fetchTimer: number | null = null
 const DEBOUNCE_MS = 300
-const CLUSTER_MIN_SIZE = 6 // 6 이상일 때만 클러스터링 (<=5는 개별 마커)
-const CLUSTER_RADIUS_PX = 60 // 픽셀 기준 반경 (필요시 조절)
+const CLUSTER_MIN_SIZE = 6
+const CLUSTER_RADIUS_PX = 60
 
 const STORAGE_KEY = 'localhub.mapview'
 
@@ -196,7 +199,6 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const bbox = [minLng, minLat, maxLng, maxLat].map((v) => v.toFixed(6)).join(',')
 
   try {
-    // increase limit to fetch more points when user requested
     const res = await fetch(`/api/pois?bbox=${encodeURIComponent(bbox)}&limit=10000`)
     if (res.ok) {
       const json = await res.json()
@@ -204,11 +206,8 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
       allItems.value = items
       return
     }
-  } catch (e) {
-    // ignore and fallback
-  }
+  } catch (e) {}
 
-  // fallback to static loader
   try {
     const data = await getAllItems(filename)
     allItems.value = data
@@ -216,21 +215,6 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
     error.value = '관광지 데이터를 불러오지 못했습니다.'
   }
 }
-
-const markerIcon = L.divIcon({
-  className: 'localhub-marker-wrapper',
-  html: `
-    <span class="localhub-marker" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
-        <path d="M12 21s7-5.07 7-12A7 7 0 1 0 5 9c0 6.93 7 12 7 12Z" fill="currentColor"/>
-        <circle cx="12" cy="9" r="2.7" fill="white"/>
-      </svg>
-    </span>
-  `,
-  iconSize: [38, 44],
-  iconAnchor: [19, 40],
-  tooltipAnchor: [0, -34],
-})
 
 function toNumber(value?: string | number) {
   if (value === undefined || value === null) return Number.NaN
@@ -268,7 +252,6 @@ const filteredDistricts = computed(() => {
   return districts.value.filter(d => d === '전체' || d.toLowerCase().includes(q))
 })
 
-// 변경: 선택이 비어있으면 "선택 없음" 상태(마커 없음)
 const visibleItems = computed(() => {
   const sel = selectedDistricts.value
   if (!sel.length) return []
@@ -293,31 +276,43 @@ const selectedDistrictLabel = computed(() => {
 
 const markerCount = computed(() => visibleCount.value)
 
-function isAllSelected() {
-  const all = districts.value.filter(d => d !== '전체')
-  return all.length > 0 && selectedDistricts.value.length === all.length
+// route list 저장 (JSON으로 내보낼 수 있는 형태)
+const routeList = ref<Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>>([])
+
+// 동적으로 아이콘 생성: order 있으면 번호 표시, selected이면 색상 토글, hideCenterDot이면 내부 흰 점 제거
+function buildMarkerIcon(order?: number, selected = false, hideSvg = false) {
+  const numberHtml = typeof order === 'number' ? `<span class="marker-order" aria-hidden="true">${order}</span>` : ''
+  const selectedClass = selected ? ' selected' : ''
+  const svgHtml = hideSvg ? '' : `
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" focusable="false" aria-hidden="true">
+      <path d="M12 21s7-5.07 7-12A7 7 0 1 0 5 9c0 6.93 7 12 7 12Z" fill="currentColor"/>
+      <circle cx="12" cy="9" r="2.7" fill="white"/>
+    </svg>
+  `
+  return L.divIcon({
+    className: 'localhub-marker-wrapper',
+    html: `
+      <span class="localhub-marker${selectedClass}" aria-hidden="true">
+        ${svgHtml}
+        ${numberHtml}
+      </span>
+    `,
+    iconSize: [38, 44],
+    iconAnchor: [19, 40],
+    tooltipAnchor: [0, -34],
+  })
 }
 
-function isChecked(d: string) {
-  if (d === '전체') return isAllSelected()
-  return selectedDistricts.value.includes(d)
-}
-
-function toggleDistrict(d: string) {
-  if (d === '전체') {
-    const all = districts.value.filter(x => x !== '전체')
-    if (isAllSelected()) {
-      setSelectedDistricts([])
-    } else {
-      setSelectedDistricts([...all])
-    }
-    return
-  }
-
-  const sel = new Set(selectedDistricts.value)
-  if (sel.has(d)) sel.delete(d)
-  else sel.add(d)
-  setSelectedDistricts(Array.from(sel))
+function handleRouteMarkerClick(item: TourItem, marker: L.Marker) {
+  const id = item.contentid
+  if (routeList.value.find(r => String(r.contentid) === String(id))) return
+  const lat = toNumber(item.mapy)
+  const lng = toNumber(item.mapx)
+  const order = routeList.value.length + 1
+  routeList.value.push({ contentid: id, title: item.title, lat, lng, order })
+  // 즉시 아이콘 업데이트
+  marker.setIcon(buildMarkerIcon(order, true, !!props.routeMode))
+  emit('route-changed', routeList.value.slice())
 }
 
 function clearMarkers() {
@@ -330,25 +325,34 @@ function updateMarkers() {
   clearMarkers()
   const bounds = L.latLngBounds([])
 
-  // 준비: 항목 -> 마커 목록 생성(툴팁/클릭 바인딩 포함)
   const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point }> = []
   for (const item of visibleItems.value) {
     const lat = toNumber(item.mapy)
     const lng = toNumber(item.mapx)
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
 
-    const marker = L.marker([lat, lng], { icon: markerIcon, keyboard: true, title: item.title || '관광지' })
+    const selectedIndex = routeList.value.findIndex(r => String(r.contentid) === String(item.contentid))
+    const isSelected = selectedIndex >= 0
+    const order = isSelected ? routeList.value[selectedIndex].order : undefined
+    const icon = buildMarkerIcon(order, isSelected, !!props.routeMode)
+
+    const marker = L.marker([lat, lng], { icon, keyboard: true, title: item.title || '관광지' })
+
     marker.bindTooltip(
       `<div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>`,
       { direction: 'top', offset: [0, -9], opacity: 1 },
     )
 
     marker.on('click', () => {
-      activeItem.value = item
-      if (map) {
-        try {
-          map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
-        } catch (e) { /* ignore */ }
+      if (props.routeMode) {
+        handleRouteMarkerClick(item, marker)
+      } else {
+        activeItem.value = item
+        if (map) {
+          try {
+            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
+          } catch (e) { /* ignore */ }
+        }
       }
     })
 
@@ -358,12 +362,10 @@ function updateMarkers() {
 
   if (!bounds.isValid()) return
 
-  // 픽셀 좌표로 변환
   for (const e of entries) {
     e.point = map.latLngToLayerPoint(L.latLng(e.lat, e.lng))
   }
 
-  // 인접 그래프 구성 (거리 기준)
   const threshold = CLUSTER_RADIUS_PX
   const n = entries.length
   const adj: number[][] = Array.from({ length: n }, () => [])
@@ -378,7 +380,6 @@ function updateMarkers() {
     }
   }
 
-  // 연결 컴포넌트 찾기 및 분리해서 레이어에 추가
   const visited = new Array(n).fill(false)
   for (let i = 0; i < n; i++) {
     if (visited[i]) continue
@@ -400,7 +401,6 @@ function updateMarkers() {
     }
   }
 
-  // 기존 fitBounds 동작 유지 (초기 로드 시)
   if (bounds.isValid()) {
     if (!initialFitDone) {
       map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
@@ -409,8 +409,35 @@ function updateMarkers() {
   }
 }
 
-watch([selectedDistricts, allItems], () => {
+// watch: 마커/데이터/모드 변경 시 다시 그리기
+watch([selectedDistricts, allItems, () => props.routeMode], () => {
   updateMarkers()
+})
+
+// routeMode가 켜질 때 새 경로 시작(원하면 비활성화로 변경 가능)
+watch(() => props.routeMode, (val, oldVal) => {
+  if (val && !oldVal) {
+    // entering route mode: start fresh
+    routeList.value = []
+    emit('route-changed', routeList.value.slice())
+  } else if (!val && oldVal) {
+    // exiting route mode: clear selections and restore icons
+    routeList.value = []
+    activeItem.value = null
+    emit('route-changed', routeList.value.slice())
+  }
+  updateMarkers()
+})
+
+// MapView.vue: 부모가 선택/카메라 상태를 가져갈 수 있도록 노출
+defineExpose({
+  exportSelection() {
+    try { saveMapView() } catch (e) {}
+    return {
+      routeList: routeList.value.slice(),
+      mapView: map ? { lat: map.getCenter().lat, lng: map.getCenter().lng, zoom: map.getZoom() } : null
+    }
+  }
 })
 
 onMounted(async () => {
@@ -434,11 +461,9 @@ onMounted(async () => {
     maxZoom: 19,
   }).addTo(map)
 
-  // use marker cluster group with chunked loading for large datasets
   // @ts-ignore
   markersLayer = L.markerClusterGroup({ chunkedLoading: true, chunkProgress: (processed, total, node) => {} })
   markersLayer.addTo(map)
-// onMounted: markersLayer.addTo(map) 바로 다음에 추가
   smallMarkersLayer = L.layerGroup();
   smallMarkersLayer.addTo(map);
 
@@ -449,11 +474,9 @@ onMounted(async () => {
   map.on('click', () => { activeItem.value = null })
 
   try {
-    // initial fetch based on current map bounds
     const bounds = map.getBounds()
     await fetchPoisForBounds(bounds)
 
-    // 기본 동작: 데이터 로드 후 선택이 비어있다면 '모두 선택'으로 초기화
     if (!selectedDistricts.value.length) {
       const all = districts.value.filter(d => d !== '전체')
       setSelectedDistricts([...all])
@@ -476,7 +499,6 @@ onBeforeUnmount(() => {
   map = null
 })
 
-// listen to map moveend to fetch new pois (debounced)
 function onMapMove() {
   if (!map) return
   if (fetchTimer) clearTimeout(fetchTimer)
@@ -671,6 +693,24 @@ function onMapMove() {
   box-shadow: 0 8px 18px rgba(60, 36, 101, 0.28);
   transform: rotate(-45deg);
   transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+:deep(.localhub-marker.selected) {
+  background: linear-gradient(135deg, #7543c7, #6f49c8);
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(96, 50, 173, 0.28);
+  border: 3px solid rgba(255,255,255,0.96);
+}
+
+:deep(.localhub-marker .marker-order) {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 900;
+  color: #fff;
+  transform: rotate(45deg);
 }
 
 :deep(.localhub-marker svg) {

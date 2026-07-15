@@ -225,30 +225,42 @@
         </button>
       </footer>
     </form>
+    <!-- 선택 미리보기 -->
+    <aside class="route-preview surface-card">
+      <div class="preview-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <strong>선택한 장소</strong>
+      </div>
+
+      <div ref="previewMapEl" class="preview-map" style="height:320px;border-radius:8px;overflow:hidden;margin-bottom:10px"></div>
+
+      <ul class="preview-list" style="list-style:none;padding:0;margin:0;display:grid;gap:8px">
+        <li v-for="p in selectedPlaces" :key="p.contentid" style="display:flex;align-items:center;gap:8px">
+          <div style="width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#7543c7,#6f49c8);color:#fff;font-weight:800">
+            {{ p.order }}
+          </div>
+          <div style="font-size:13px;color:#202635">{{ p.title }}</div>
+        </li>
+      </ul>
+    </aside>
   </div>
 </template>
 
 <script setup lang="ts">
-import {
-  onMounted,
-  reactive,
-  ref,
-} from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { createPost, fetchPost, updatePost } from '../services/postService'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
-import {
-  useRoute,
-  useRouter,
-} from 'vue-router'
-
-import {
-  createPost,
-  fetchPost,
-  updatePost,
-} from '../services/postService'
+const previewMapEl = ref<HTMLDivElement | null>(null)
+const selectedPlaces = ref<
+  Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>
+>([])
+let previewMap: L.Map | null = null
+let previewLayer: L.LayerGroup | null = null
 
 const route = useRoute()
 const router = useRouter()
-
 const id = String(route.params.id ?? '')
 const isEdit = Boolean(id)
 
@@ -262,40 +274,82 @@ const loading = ref(false)
 const error = ref('')
 
 onMounted(async () => {
-  if (!isEdit) {
-    return
-  }
-
-  loading.value = true
-
+  // load selected places (from Home -> sessionStorage)
   try {
-    const post = await fetchPost(id)
-
-    form.title = post.title
-    form.content = post.content
-  } catch (caughtError) {
-    error.value = (caughtError as Error).message
-  } finally {
-    loading.value = false
+    const raw = sessionStorage.getItem('localhub.routeSelection')
+    if (raw) selectedPlaces.value = JSON.parse(raw)
+  } catch {
+    /* ignore parse errors */
   }
+
+  // initialize preview map if we have selections
+  if (selectedPlaces.value.length > 0 && previewMapEl.value) {
+    const first = selectedPlaces.value[0]
+    previewMap = L.map(previewMapEl.value, {
+      zoomControl: false,
+      attributionControl: false,
+    }).setView([first.lat ?? 37.5665, first.lng ?? 126.978], 13)
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(previewMap)
+    previewLayer = L.layerGroup().addTo(previewMap)
+
+    selectedPlaces.value.forEach((p) => {
+      const iconHtml = `<div style="
+        width:34px;height:34px;border-radius:8px;
+        background:linear-gradient(135deg,#7543c7,#6f49c8);
+        color:#fff;display:grid;place-items:center;font-weight:900">
+          ${p.order}
+        </div>`
+      const icon = L.divIcon({ html: iconHtml, className: '', iconSize: [34, 34], iconAnchor: [17, 34] })
+      L.marker([p.lat ?? 0, p.lng ?? 0], { icon }).addTo(previewLayer as L.LayerGroup)
+    })
+
+    // restore camera if available
+    try {
+      const mvRaw = sessionStorage.getItem('localhub.mapview')
+      if (mvRaw) {
+        const mv = JSON.parse(mvRaw)
+        if (mv && Number.isFinite(mv.lat) && Number.isFinite(mv.lng) && Number.isFinite(mv.zoom)) {
+          previewMap.setView([mv.lat, mv.lng], mv.zoom)
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    setTimeout(() => previewMap?.invalidateSize(), 50)
+  }
+
+  // if editing an existing post, load it
+  if (isEdit) {
+    loading.value = true
+    try {
+      const post = await fetchPost(id)
+      form.title = post.title ?? ''
+      form.content = post.content ?? ''
+    } catch (caughtError) {
+      error.value = (caughtError as Error).message
+    } finally {
+      loading.value = false
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  previewMap?.remove()
+  previewMap = null
+  previewLayer = null
 })
 
 async function onSubmit() {
   error.value = ''
 
-  if (
-    !form.title.trim() ||
-    !form.content.trim() ||
-    !form.password
-  ) {
-    error.value =
-      '제목, 내용, 비밀번호를 모두 입력해주세요.'
-
+  if (!form.title.trim() || !form.content.trim() || !form.password) {
+    error.value = '제목, 내용, 비밀번호를 모두 입력해주세요.'
     return
   }
 
   loading.value = true
-
   try {
     if (isEdit) {
       await updatePost(id, {
@@ -303,26 +357,15 @@ async function onSubmit() {
         content: form.content.trim(),
         password: form.password,
       })
-
-      router.push({
-        name: 'PostDetail',
-        params: {
-          id,
-        },
-      })
+      router.push({ name: 'PostDetail', params: { id } })
     } else {
+      // NOTE: selectedPlaces is available here if you want to include route data in the payload later
       const created = await createPost({
         title: form.title.trim(),
         content: form.content.trim(),
         password: form.password,
       })
-
-      router.push({
-        name: 'PostDetail',
-        params: {
-          id: (created as any).id,
-        },
-      })
+      router.push({ name: 'PostDetail', params: { id: (created as any).id } })
     }
   } catch (caughtError) {
     error.value = (caughtError as Error).message
@@ -433,6 +476,13 @@ async function onSubmit() {
   border-radius: 999px;
 
   animation: spin 650ms linear infinite;
+}
+
+.post-form-layout {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 18px;
+  align-items: start;
 }
 
 @media (max-width: 560px) {
