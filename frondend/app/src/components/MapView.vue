@@ -61,6 +61,56 @@
       <span v-else>{{ markerCount }}개의 장소</span>
     </div>
 
+    <!-- 장소 인포 패널 -->
+    <div
+      v-if="activeItem"
+      class="map-info-panel surface-card"
+      role="dialog"
+      aria-label="장소 정보"
+    >
+      <button type="button" class="map-info-close" @click="activeItem = null" aria-label="정보 닫기">×</button>
+
+      <h3 class="map-info-title">{{ activeItem.title }}</h3>
+
+      <div class="map-info-media">
+        <img
+          v-if="activeItem.firstimage"
+          :src="activeItem.firstimage"
+          :alt="activeItem.title"
+          class="map-info-image"
+        />
+        <div v-else class="map-info-image placeholder" aria-hidden="true">이미지 없음</div>
+      </div>
+
+      <p class="map-info-desc">
+        {{ activeItem.overview || '서울에서 새롭게 발견할 수 있는 장소입니다. 방문 전 주소와 연락처를 확인해주세요.' }}
+      </p>
+
+      <div class="map-info-meta">
+        <div><strong>주소</strong>
+          <div class="muted">{{ [activeItem.addr1, activeItem.addr2].filter(Boolean).join(' ') || '주소 정보 없음' }}</div>
+        </div>
+
+        <div style="margin-top:8px"><strong>전화</strong>
+          <div v-if="activeItem.tel"><a :href="`tel:${activeItem.tel}`">{{ activeItem.tel }}</a></div>
+          <div v-else>등록된 번호 없음</div>
+        </div>
+      </div>
+
+      <div class="map-info-actions" style="margin-top:10px">
+        <button type="button" class="btn-sm" @click="activeItem = null">닫기</button>
+        <button
+          v-if="activeItem"
+          type="button"
+          class="btn-sm"
+          style="margin-left:8px"
+          @click="() => router.push({ name: 'Place', params: { id: activeItem.contentid } })"
+        >
+          자세히 보기
+        </button>
+      </div>
+    </div>
+
     <div v-if="loading" class="map-loading" role="status" aria-live="polite">
       <div class="map-loading-card">
         <div class="loading-ring" aria-hidden="true" />
@@ -103,6 +153,7 @@ const error = ref('')
 const allItems = ref<TourItem[]>([])
 const filterOpen = ref(false)
 const searchQuery = ref('')
+const activeItem = ref<TourItem | null>(null)
 
 let map: L.Map | null = null
 let markersLayer: any = null
@@ -271,14 +322,17 @@ function updateMarkers() {
 
     const marker = L.marker([lat, lng], { icon: markerIcon, keyboard: true, title: item.title || '관광지' })
     marker.bindTooltip(
-      `
-        <div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>
-        <div class="localhub-tooltip-address">${escapeHtml(item.addr1 || '주소 정보 없음')}</div>
-      `,
+      `<div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>`,
       { direction: 'top', offset: [0, -9], opacity: 1 },
     )
+
     marker.on('click', () => {
-      router.push({ name: 'Place', params: { id: item.contentid } })
+      activeItem.value = item
+      if (map) {
+        try {
+          map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
+        } catch (e) { /* ignore */ }
+      }
     })
 
     entries.push({ item, lat, lng, marker })
@@ -364,6 +418,7 @@ onMounted(async () => {
 
   map.on('moveend', onMapMove)
   map.on('zoomend', onMapMove)
+  map.on('click', () => { activeItem.value = null })
 
   try {
     // initial fetch based on current map bounds
@@ -629,6 +684,65 @@ function onMapMove() {
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.map-info-panel {
+  position: absolute;
+  z-index: 850;
+  right: 14px;
+  bottom: 14px;
+  width: 360px;
+  max-width: calc(100% - 28px);
+  padding: 12px;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(20,16,40,0.12);
+  background: #fff;
+}
+
+.map-info-close {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-info-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin: 6px 0 8px;
+}
+
+.map-info-image {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+}
+
+.map-info-desc {
+  margin: 8px 0;
+  font-size: 13px;
+  color: #6f7584;
+}
+
+.map-info-meta .muted {
+  font-size: 13px;
+  color: #485066;
+  margin-top: 4px;
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.06);
+  background: #fff;
+  cursor: pointer;
 }
 
 @media (max-width: 960px) {
