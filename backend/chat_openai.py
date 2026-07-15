@@ -102,9 +102,21 @@ async def chat_openai(req: ChatRequest, request: Request):
         return {"id": resp_id, "reply": f"[mock/openai-unavailable] 찾은 장소 수: {len(sources)}. 원문: {req.message[:200]}", "sources": sources, "session_id": session_id, "model_meta": {"mock": True, "openai_available": False}}
 
     sources_text = "\n".join([f"- {s['title']} ({s['contentid']}): {s.get('addr1') or ''}" for s in sources]) if sources else "(no sources)"
+
+    # If search is requested but no local sources found, do NOT call the model to avoid hallucination.
+    if req.use_search and not sources:
+        return {
+            "id": resp_id,
+            "reply": "로컬 데이터에서 요청하신 항목을 찾을 수 없습니다. 사용된 출처: 없음",
+            "sources": [],
+            "session_id": session_id,
+            "model_meta": {"local_only": True}
+        }
+
     system_prompt = (
         "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고,"
-        " 제공된 출처를 사용해 근거가 있는 답변만 하세요. 출처가 없으면 '출처 없음'이라고 명확히 적으세요."
+        " 오직 제공된 로컬 출처만 사용하여 근거 있는 답변만 하세요. 절대 외부의 지식(인터넷, 개인경험, 일반상식 등)이나 추측을 사용하지 마세요."
+        " 출처가 없으면 '사용된 출처: 없음'이라고 명확히 적으세요."
         " 답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
     )
     user_prompt = (
