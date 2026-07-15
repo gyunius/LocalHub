@@ -125,16 +125,43 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 export type PostItem = { id: string; title: string; content: string; created_at: string; views?: number; };
 
 export async function fetchPosts(page = 1, limit = 20): Promise<PostItem[]> {
-  const res = await fetch(`${API_BASE}/posts?page=${page}&limit=${limit}`);
-  if (!res.ok) throw new Error(await res.text());
-  const json = await res.json();
-  return Array.isArray(json) ? json : (json.items ?? []);
+  try {
+    const res = await fetch(`${API_BASE}/posts?page=${page}&limit=${limit}`);
+    if (!res.ok) throw new Error(await res.text());
+    const json = await res.json();
+    return Array.isArray(json) ? json : (json.items ?? []);
+  } catch (apiErr) {
+    // 폴백: 로컬 mock 파일
+    try {
+      const fileRes = await fetch(`/data/mock_posts.json`);
+      if (!fileRes.ok) throw apiErr;
+      const mock = await fileRes.json();
+      return Array.isArray(mock) ? mock : (mock.items ?? []);
+    } catch {
+      throw apiErr;
+    }
+  }
 }
 
 export async function fetchPost(id: string): Promise<PostItem> {
-  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  } catch (apiErr) {
+    // 폴백: 로컬 mock 파일에서 id로 검색
+    try {
+      const fileRes = await fetch(`/data/mock_posts.json`);
+      if (!fileRes.ok) throw apiErr;
+      const data = await fileRes.json() as PostItem[] | { items?: PostItem[] };
+      const list = Array.isArray(data) ? data : (data.items ?? []);
+      const found = list.find(p => p.id === id);
+      if (!found) throw new Error('Post not found in mock data');
+      return found;
+    } catch {
+      throw apiErr;
+    }
+  }
 }
 
 export async function createPost(payload: { title: string; content: string; password: string; }): Promise<PostItem> {
