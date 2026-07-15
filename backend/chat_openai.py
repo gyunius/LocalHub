@@ -4,10 +4,15 @@ from collections import deque
 
 try:
     import openai
+    AsyncOpenAI = getattr(openai, "AsyncOpenAI", None)
+    OpenAI = getattr(openai, "OpenAI", None)
 except Exception:
     openai = None
+    AsyncOpenAI = None
+    OpenAI = None
 
 from pydantic import BaseModel
+import traceback
 from uuid import uuid4
 from typing import Optional, List
 
@@ -56,6 +61,7 @@ class ChatResponse(BaseModel):
     model_meta: Optional[dict] = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-5-mini"
 if OPENAI_API_KEY and openai:
     openai.api_key = OPENAI_API_KEY
 
@@ -96,27 +102,143 @@ async def chat_openai(req: ChatRequest, request: Request):
         return {"id": resp_id, "reply": f"[mock/openai-unavailable] 찾은 장소 수: {len(sources)}. 원문: {req.message[:200]}", "sources": sources, "session_id": session_id, "model_meta": {"mock": True, "openai_available": False}}
 
     sources_text = "\n".join([f"- {s['title']} ({s['contentid']}): {s.get('addr1') or ''}" for s in sources]) if sources else "(no sources)"
-    system_prompt = "You are a helpful assistant recommending Seoul points of interest when asked. Use provided sources when relevant and cite them."
-    user_prompt = f"User message: {req.message}\n\nSources:\n{sources_text}\n\nReply concisely and list used sources by contentid."
+
+    # If search is requested but no local sources found, do NOT call the model to avoid hallucination.
+    if req.use_search and not sources:
+        return {
+            "id": resp_id,
+            "reply": "로컬 데이터에서 요청하신 항목을 찾을 수 없습니다. 사용된 출처: 없음",
+            "sources": [],
+            "session_id": session_id,
+            "model_meta": {"local_only": True}
+        }
+
+    system_prompt = (
+        "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고,"
+        " 오직 제공된 로컬 출처만 사용하여 근거 있는 답변만 하세요. 절대 외부의 지식(인터넷, 개인경험, 일반상식 등)이나 추측을 사용하지 마세요."
+        " 출처가 없으면 '사용된 출처: 없음'이라고 명확히 적으세요."
+        " 답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
+    )
+    user_prompt = (
+        f"질문: {req.message}\n\n"
+        f"출처 목록:\n{sources_text}\n\n"
+        "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요."
+        " 출처를 사용했으면 본문 끝에 사용된 출처의 contentid를 대괄호로 나열하세요. 출처가 없다면 '사용된 출처: 없음'을 쓰세요."
+    )
     messages = [{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}]
 
     openai_resp_text = ""
     model_meta = {"provider":"openai","model":"unknown"}
     try:
         attempt = 0
+        last_exc = None
         while attempt < 3:
             attempt += 1
             try:
-                resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
-                model_meta = {"provider":"openai","model": getattr(resp, 'model', 'gpt-3.5-turbo')}
-                choice = resp.choices[0] if getattr(resp, 'choices', None) else None
-                content = None
-                if choice:
-                    if getattr(choice, 'message', None):
-                        content = getattr(choice.message, 'content', None)
-                    if not content:
-                        content = getattr(choice, 'text', None)
-                openai_resp_text = (content or "").strip()
+                resp = None
+                # Prefer async OpenAI client if available
+                if AsyncOpenAI is not None:
+                    try:
+                        client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else AsyncOpenAI()
+                        if hasattr(client, "__aenter__"):
+                            async with client as c:
+                                is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                                if is_modern and hasattr(c, 'responses'):
+                                    # Responses API: pass messages list as `input` for chat-style models
+                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
+                                else:
+                                    token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
+                                    kwargs = {token_param: 350}
+                                    if not is_modern:
+                                        kwargs['temperature'] = 0.6
+                                    resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
+                        else:
+                            is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                            if is_modern and hasattr(client, 'responses'):
+                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
+                            else:
+                                token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
+                                kwargs = {token_param: 350}
+                                if not is_modern:
+                                    kwargs['temperature'] = 0.6
+                                resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
+                    except Exception as ex:
+                        last_exc = traceback.format_exc()
+                        resp = None
+
+                # If async client not available, try sync OpenAI client (run in thread)
+                if resp is None and OpenAI is not None:
+                    try:
+                        def sync_call():
+                            client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+                            is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                            if is_modern and hasattr(client, 'responses'):
+                                return client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_completion_tokens=350)
+                            token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
+                            kwargs = {token_param: 350}
+                            if not is_modern:
+                                kwargs['temperature'] = 0.6
+                            return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
+                        resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
+                    except Exception as ex:
+                        last_exc = traceback.format_exc()
+                        resp = None
+
+                # Do not call legacy openai.ChatCompletion for openai>=1.0; rely on AsyncOpenAI/OpenAI
+                # If neither client produced a response, raise to outer handler and report error
+                if resp is None:
+                    raise RuntimeError(last_exc or "no compatible OpenAI client available or client call failed")
+
+                # Parse response robustly for different client types
+                model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
+                openai_resp_text = ""
+                # Responses API may provide `output_text` or `output` array
+                try:
+                    out_text = getattr(resp, 'output_text', None) or (resp.get('output_text') if isinstance(resp, dict) else None)
+                except Exception:
+                    out_text = None
+                if out_text:
+                    openai_resp_text = str(out_text).strip()
+                else:
+                    # try choices (chat.completions style)
+                    content = None
+                    choices = None
+                    try:
+                        choices = getattr(resp, 'choices', None) or (resp.get('choices') if isinstance(resp, dict) else None)
+                    except Exception:
+                        choices = None
+                    if choices:
+                        first = choices[0]
+                        msg = None
+                        try:
+                            msg = getattr(first, 'message', None) or (first.get('message') if isinstance(first, dict) else None)
+                        except Exception:
+                            msg = None
+                        if msg:
+                            content = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else None)
+                        else:
+                            content = getattr(first, 'text', None) or (first.get('text') if isinstance(first, dict) else None)
+                        openai_resp_text = (content or "").strip()
+                    else:
+                        # try Responses API detailed output structure
+                        try:
+                            out = getattr(resp, 'output', None) or (resp.get('output') if isinstance(resp, dict) else None)
+                        except Exception:
+                            out = None
+                        if out:
+                            parts = []
+                            for item in out:
+                                # each item may have 'content' array
+                                cont = item.get('content') if isinstance(item, dict) else None
+                                if cont and isinstance(cont, list):
+                                    for c in cont:
+                                        if isinstance(c, dict):
+                                            text = c.get('text') or c.get('payload') or None
+                                            if text:
+                                                parts.append(text)
+                                        elif isinstance(c, str):
+                                            parts.append(c)
+                            openai_resp_text = "\n".join(parts).strip()
                 break
             except Exception:
                 if attempt < 3:
