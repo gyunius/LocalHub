@@ -122,11 +122,17 @@ async def chat_openai(req: ChatRequest, request: Request):
                         if hasattr(client, "__aenter__"):
                             async with client as c:
                                 token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
-                                kwargs = {token_param: 350, 'temperature': 0.6}
+                                is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                                kwargs = {token_param: 350}
+                                if not is_modern:
+                                    kwargs['temperature'] = 0.6
                                 resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
                         else:
                             token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
-                            kwargs = {token_param: 350, 'temperature': 0.6}
+                            is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                            kwargs = {token_param: 350}
+                            if not is_modern:
+                                kwargs['temperature'] = 0.6
                             resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
                     except Exception as ex:
                         last_exc = traceback.format_exc()
@@ -138,7 +144,10 @@ async def chat_openai(req: ChatRequest, request: Request):
                         def sync_call():
                             client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
                             token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
-                            kwargs = {token_param: 350, 'temperature': 0.6}
+                            is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
+                            kwargs = {token_param: 350}
+                            if not is_modern:
+                                kwargs['temperature'] = 0.6
                             return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
                         resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
                     except Exception as ex:
