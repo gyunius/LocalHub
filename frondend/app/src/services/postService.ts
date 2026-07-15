@@ -18,6 +18,15 @@ function loadQueue(): QueueItem[] {
 }
 function saveQueue(q: QueueItem[]) { localStorage.setItem(LS_QUEUE_KEY, JSON.stringify(q)); }
 
+// Normalize IDs for backend calls: mock ids like `p1` -> `1`
+function toBackendId(orig: string) {
+  if (typeof orig === 'string' && orig.startsWith('p')) {
+    const n = orig.slice(1);
+    if (/^\d+$/.test(n)) return n;
+  }
+  return orig;
+}
+
 export function getLocalIncrement(id: string): number {
   const m = loadViewsMap();
   return m[id] ?? 0;
@@ -59,17 +68,27 @@ export async function flushQueueOnce(): Promise<void> {
 
   syncRunning = true;
   try {
-    // 합쳐서 id별 delta 계산
+    // 합쳐서 id별 delta 계산 (로컬 id 키는 유지하되, 전송시 백엔드에 맞게 정규화)
     const byId = q.reduce<Record<string, number>>((acc, it) => {
       acc[it.id] = (acc[it.id] ?? 0) + it.delta;
       return acc;
     }, {});
 
+    const toBackendId = (orig: string) => {
+      // mock ids like `p1` -> send `1` to backend
+      if (typeof orig === 'string' && orig.startsWith('p')) {
+        const n = orig.slice(1);
+        if (/^\d+$/.test(n)) return n;
+      }
+      return orig;
+    };
+
     // 순차 전송 (간단하고 안전)
     for (const id of Object.keys(byId)) {
       const delta = byId[id];
+      const sendId = toBackendId(id);
       try {
-        const res = await fetch(`/api/posts/${encodeURIComponent(id)}/views`, {
+        const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(String(sendId))}/views`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ delta })
@@ -145,7 +164,7 @@ export async function fetchPosts(page = 1, limit = 20): Promise<PostItem[]> {
 
 export async function fetchPost(id: string): Promise<PostItem> {
   try {
-    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`);
+    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(toBackendId(id))}`);
     if (!res.ok) throw new Error(await res.text());
     const json = await res.json();
     // normalize backend `body` -> frontend `content`
@@ -184,7 +203,7 @@ export async function createPost(payload: { title: string; content: string; pass
 }
 
 export async function updatePost(id: string, payload: { title?: string; content?: string; password: string; }): Promise<PostItem> {
-  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`, {
+  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(toBackendId(id))}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -196,7 +215,7 @@ export async function updatePost(id: string, payload: { title?: string; content?
 }
 
 export async function deletePost(id: string, password: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`, {
+  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(toBackendId(id))}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password })
@@ -206,7 +225,7 @@ export async function deletePost(id: string, password: string): Promise<void> {
 }
 
 export async function verifyPostPassword(id: string, password: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}/verify`, {
+  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(toBackendId(id))}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password })

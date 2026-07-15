@@ -14,6 +14,11 @@ from sqlalchemy import select, text
 
 from models import Base, POI, Post, Comment
 import migrate as migrator
+import logging
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 DB_PATH = os.getenv("DB_PATH") or str(Path(__file__).parent / "data" / "localhub.db")
@@ -29,6 +34,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# middleware: log request body when responses are errors, and log exceptions
+logger = logging.getLogger("localhub")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    # ensure at least one handler so logs appear in the uvicorn console
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    logger.addHandler(ch)
+
+def _truncate_body(b: bytes, limit: int = 1000) -> str:
+    try:
+        s = b.decode('utf-8', errors='replace')
+    except Exception:
+        s = str(b)
+    s = s.replace('\n', '\\n')
+    if len(s) > limit:
+        return s[:limit] + '...'
+    return s
+
+class LogRequestBodyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        try:
+            body_bytes = await request.body()
+        except Exception:
+            body_bytes = b''
+
+        # replay body for downstream handlers
+        async def receive() -> dict:
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+        request._receive = receive
+
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.exception("Exception while handling %s %s - body=%s", request.method, request.url.path, _truncate_body(body_bytes))
+            raise
+
+        # Log all requests; warnings for errors
+        msg = f"HTTP {request.method} {request.url.path} -> {response.status_code} body={_truncate_body(body_bytes)}"
+        if response.status_code >= 400:
+            logger.warning(msg)
+        else:
+            logger.info(msg)
+
+        return response
+
+app.add_middleware(LogRequestBodyMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.body()
+    except Exception:
+        body = b''
+    logger.warning("Request validation error for %s %s - body=%s errors=%s", request.method, request.url.path, _truncate_body(body), exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 def poi_to_dict(r: POI):
     return {

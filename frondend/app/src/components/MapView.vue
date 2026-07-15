@@ -106,12 +106,15 @@ const searchQuery = ref('')
 
 let map: L.Map | null = null
 let markersLayer: any = null
+let smallMarkersLayer: any = null
 let initialFitDone = false
 
 const router = useRouter()
 
 let fetchTimer: number | null = null
 const DEBOUNCE_MS = 300
+const CLUSTER_MIN_SIZE = 6 // 6 이상일 때만 클러스터링 (<=5는 개별 마커)
+const CLUSTER_RADIUS_PX = 60 // 픽셀 기준 반경 (필요시 조절)
 
 async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const pad = 0.06
@@ -251,6 +254,7 @@ function toggleDistrict(d: string) {
 
 function clearMarkers() {
   if (markersLayer && markersLayer.clearLayers) markersLayer.clearLayers()
+  if (smallMarkersLayer && smallMarkersLayer.clearLayers) smallMarkersLayer.clearLayers()
 }
 
 function updateMarkers() {
@@ -258,14 +262,14 @@ function updateMarkers() {
   clearMarkers()
   const bounds = L.latLngBounds([])
 
+  // 준비: 항목 -> 마커 목록 생성(툴팁/클릭 바인딩 포함)
+  const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point }> = []
   for (const item of visibleItems.value) {
     const lat = toNumber(item.mapy)
     const lng = toNumber(item.mapx)
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
 
     const marker = L.marker([lat, lng], { icon: markerIcon, keyboard: true, title: item.title || '관광지' })
-    markersLayer.addLayer(marker)
-
     marker.bindTooltip(
       `
         <div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>
@@ -273,22 +277,64 @@ function updateMarkers() {
       `,
       { direction: 'top', offset: [0, -9], opacity: 1 },
     )
-
     marker.on('click', () => {
       router.push({ name: 'Place', params: { id: item.contentid } })
     })
 
+    entries.push({ item, lat, lng, marker })
     bounds.extend([lat, lng])
   }
 
+  if (!bounds.isValid()) return
+
+  // 픽셀 좌표로 변환
+  for (const e of entries) {
+    e.point = map.latLngToLayerPoint(L.latLng(e.lat, e.lng))
+  }
+
+  // 인접 그래프 구성 (거리 기준)
+  const threshold = CLUSTER_RADIUS_PX
+  const n = entries.length
+  const adj: number[][] = Array.from({ length: n }, () => [])
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dx = entries[i].point!.x - entries[j].point!.x
+      const dy = entries[i].point!.y - entries[j].point!.y
+      if (dx * dx + dy * dy <= threshold * threshold) {
+        adj[i].push(j)
+        adj[j].push(i)
+      }
+    }
+  }
+
+  // 연결 컴포넌트 찾기 및 분리해서 레이어에 추가
+  const visited = new Array(n).fill(false)
+  for (let i = 0; i < n; i++) {
+    if (visited[i]) continue
+    const stack = [i]
+    visited[i] = true
+    const comp: number[] = []
+    while (stack.length) {
+      const cur = stack.pop()!
+      comp.push(cur)
+      for (const nb of adj[cur]) {
+        if (!visited[nb]) { visited[nb] = true; stack.push(nb) }
+      }
+    }
+
+    if (comp.length >= CLUSTER_MIN_SIZE) {
+      for (const idx of comp) markersLayer.addLayer(entries[idx].marker)
+    } else {
+      for (const idx of comp) smallMarkersLayer.addLayer(entries[idx].marker)
+    }
+  }
+
+  // 기존 fitBounds 동작 유지 (초기 로드 시)
   if (bounds.isValid()) {
-    // Only auto-fit on initial load (or when no previous fit done).
-    // Prevents snapping back when user manually zooms/pans.
     if (!initialFitDone) {
       map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
       initialFitDone = true
     }
-    // If desired: else if map viewport does not contain bounds, consider fitting.
   }
 }
 
@@ -312,6 +358,9 @@ onMounted(async () => {
   // @ts-ignore
   markersLayer = L.markerClusterGroup({ chunkedLoading: true, chunkProgress: (processed, total, node) => {} })
   markersLayer.addTo(map)
+// onMounted: markersLayer.addTo(map) 바로 다음에 추가
+  smallMarkersLayer = L.layerGroup();
+  smallMarkersLayer.addTo(map);
 
   map.on('moveend', onMapMove)
   map.on('zoomend', onMapMove)
