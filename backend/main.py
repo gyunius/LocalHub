@@ -446,7 +446,8 @@ async def chat_endpoint(req: ChatRequest):
                             "addr1": p.addr1,
                             "mapx": p.mapx,
                             "mapy": p.mapy,
-                            "score": None
+                            "score": None,
+                            "used": False,
                         })
             except Exception:
                 # 검색 실패시 빈 sources로 계속 진행 (mock)
