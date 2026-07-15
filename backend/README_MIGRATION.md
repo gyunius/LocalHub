@@ -10,6 +10,12 @@ pip install -r requirements.txt
 cp .env.example .env
 (필요하면 경로 수정)
 
+Secrets
+- Add your OpenAI API key to `.env` **locally** (do not commit). Example:
+	OPENAI_API_KEY=sk-...
+- Alternatively set `OPENAI_API_KEY` in your deployment environment or use a secrets manager.
+- Ensure `.env` is ignored by git (see `.gitignore`).
+
 3) dry-run(테스트)
 python migrate.py --dry-run
 
