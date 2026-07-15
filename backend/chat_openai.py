@@ -102,8 +102,17 @@ async def chat_openai(req: ChatRequest, request: Request):
         return {"id": resp_id, "reply": f"[mock/openai-unavailable] 찾은 장소 수: {len(sources)}. 원문: {req.message[:200]}", "sources": sources, "session_id": session_id, "model_meta": {"mock": True, "openai_available": False}}
 
     sources_text = "\n".join([f"- {s['title']} ({s['contentid']}): {s.get('addr1') or ''}" for s in sources]) if sources else "(no sources)"
-    system_prompt = "You are a helpful assistant recommending Seoul points of interest when asked. Use provided sources when relevant and cite them."
-    user_prompt = f"User message: {req.message}\n\nSources:\n{sources_text}\n\nReply concisely and list used sources by contentid."
+    system_prompt = (
+        "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고,"
+        " 제공된 출처를 사용해 근거가 있는 답변만 하세요. 출처가 없으면 '출처 없음'이라고 명확히 적으세요."
+        " 답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
+    )
+    user_prompt = (
+        f"질문: {req.message}\n\n"
+        f"출처 목록:\n{sources_text}\n\n"
+        "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요."
+        " 출처를 사용했으면 본문 끝에 사용된 출처의 contentid를 대괄호로 나열하세요. 출처가 없다면 '사용된 출처: 없음'을 쓰세요."
+    )
     messages = [{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}]
 
     openai_resp_text = ""
