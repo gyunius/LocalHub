@@ -446,7 +446,8 @@ function onComposerSubmitted() {
   position: absolute;
   right: 18px;
   bottom: 18px;
-  z-index: 60;
+  /* ensure chat sits above map layers */
+  z-index: 3000;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -466,6 +467,8 @@ function onComposerSubmitted() {
 .chat-popup {
   margin-top: 10px;
   width: min(420px, 92vw);
+  z-index: 3000;
+  position: relative;
 }
 
 @media (max-width: 640px) {
