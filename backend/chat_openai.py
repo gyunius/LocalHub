@@ -11,9 +11,9 @@ from pydantic import BaseModel
 from uuid import uuid4
 from typing import Optional, List
 
-from models import POI
+from .models import POI
 from sqlalchemy import select, text
-from main import AsyncSessionLocal
+from .main import AsyncSessionLocal
 
 router = APIRouter()
 

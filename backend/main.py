@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, text
 
-from models import Base, POI, Post, Comment
-import migrate as migrator
+from .models import Base, POI, Post, Comment
+from . import migrate as migrator
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 DB_PATH = os.getenv("DB_PATH") or str(Path(__file__).parent / "data" / "localhub.db")
@@ -109,12 +109,17 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
 async def ensure_indexes():
     # Run migration to ensure DB schema and data are present. This allows
     # running `python -m uvicorn main:app ...` without a separate migrate step.
-    try:
-        data_dir, db_path = migrator.default_paths()
-        await migrator.migrate(data_dir, db_path)
-    except Exception as e:
-        # Log migration errors but continue to attempt index creation
-        print(f"Migration failed: {e}")
+    # Migrations can be skipped by setting the SKIP_MIGRATE environment variable.
+    skip = os.getenv("SKIP_MIGRATE")
+    if skip and str(skip).lower() in ("1", "true", "yes"):
+        print("Skipping migration due to SKIP_MIGRATE")
+    else:
+        try:
+            data_dir, db_path = migrator.default_paths()
+            await migrator.migrate(data_dir, db_path)
+        except Exception as e:
+            # Log migration errors but continue to attempt index creation
+            print(f"Migration failed: {e}")
 
     # create indexes for mapx/mapy to speed up bbox queries
     async with engine.begin() as conn:
@@ -439,7 +444,7 @@ async def chat_endpoint(req: ChatRequest):
     }
 # include chat_openai router if present
 try:
-    from chat_openai import router as chat_router
+    from .chat_openai import router as chat_router
     app.include_router(chat_router)
 except Exception:
     pass
