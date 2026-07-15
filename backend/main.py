@@ -64,8 +64,17 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
                 try:
                     pattern = f"%{q}%"
                     like_sql = text("SELECT contentid FROM poi WHERE (title LIKE :p OR addr1 LIKE :p) LIMIT :lim OFFSET :off")
-                    r2 = await session.execute(like_sql.bindparams(p=pattern, lim=limit, off=offset))
-                    contentids = [row[0] for row in r2.fetchall()]
+                    contentids = []
+                    try:
+                        r2 = await session.execute(like_sql.bindparams(p=pattern, lim=limit, off=offset))
+                        contentids = [row[0] for row in r2.fetchall()]
+                        q_nospace = q.replace(' ', '') if ' ' in q else None
+                        if (not contentids) and q_nospace:
+                            p2 = f"%{q_nospace}%"
+                            r3 = await session.execute(like_sql.bindparams(p=p2, lim=limit, off=offset))
+                            contentids = [row[0] for row in r3.fetchall()]
+                    except Exception:
+                        contentids = []
                 except Exception:
                     contentids = []
             if not contentids:
