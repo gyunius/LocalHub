@@ -15,6 +15,8 @@ from sqlalchemy import select, text
 
 from .models import Base, POI, Post, Comment
 from . import migrate as migrator
+from .logging_config import configure_logging
+import logging
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 DB_PATH = os.getenv("DB_PATH") or str(Path(__file__).parent / "data" / "localhub.db")
@@ -30,6 +32,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# configure minimal structured logging
+configure_logging()
+logger = logging.getLogger(__name__)
+
+
+# basic request logging middleware
+@app.middleware("http")
+async def log_requests(request, call_next):
+    start = datetime.utcnow()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.exception("Unhandled exception during request", extra={"extra": {"path": request.url.path}})
+        raise
+    duration_ms = (datetime.utcnow() - start).total_seconds() * 1000.0
+    logger.info(f"request complete", extra={"extra": {"method": request.method, "path": str(request.url), "status": response.status_code, "duration_ms": round(duration_ms, 2)}})
+    return response
 
 def poi_to_dict(r: POI):
     return {
