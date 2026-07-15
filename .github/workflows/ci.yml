@@ -27,9 +27,15 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest pytest-asyncio
 
-      - name: Run backend tests
+      - name: Run backend tests (debug)
         env:
           SKIP_MIGRATE: '1'
         run: |
+          set -eux
           cd backend
-          pytest -q
+          echo "PWD: $(pwd)"
+          echo "Listing backend files:"; ls -la
+          echo "Python version:"; python -V
+          echo "Pip list:"; python -m pip list
+          echo "Running pytest (verbose)"
+          pytest -q -vv
