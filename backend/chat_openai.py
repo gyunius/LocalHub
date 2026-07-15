@@ -119,9 +119,13 @@ async def chat_openai(req: ChatRequest, request: Request):
                         client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else AsyncOpenAI()
                         if hasattr(client, "__aenter__"):
                             async with client as c:
-                                resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+                                token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
+                                kwargs = {token_param: 350, 'temperature': 0.6}
+                                resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
                         else:
-                            resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+                            token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
+                            kwargs = {token_param: 350, 'temperature': 0.6}
+                            resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
                     except Exception:
                         resp = None
 
@@ -130,7 +134,9 @@ async def chat_openai(req: ChatRequest, request: Request):
                     try:
                         def sync_call():
                             client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
-                            return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6)
+                            token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
+                            kwargs = {token_param: 350, 'temperature': 0.6}
+                            return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
                         resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
                     except Exception:
                         resp = None
