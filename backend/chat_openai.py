@@ -124,7 +124,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                                 is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                                 if is_modern and hasattr(c, 'responses'):
                                     # Responses API: pass messages list as `input` for chat-style models
-                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=350), timeout=30)
+                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
                                 else:
                                     token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
                                     kwargs = {token_param: 350}
@@ -134,7 +134,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                         else:
                             is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                             if is_modern and hasattr(client, 'responses'):
-                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=350), timeout=30)
+                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
                             else:
                                 token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
                                 kwargs = {token_param: 350}
