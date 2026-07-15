@@ -60,6 +60,7 @@ class ChatResponse(BaseModel):
     model_meta: Optional[dict] = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-5-mini"
 if OPENAI_API_KEY and openai:
     openai.api_key = OPENAI_API_KEY
 
@@ -118,9 +119,9 @@ async def chat_openai(req: ChatRequest, request: Request):
                         client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else AsyncOpenAI()
                         if hasattr(client, "__aenter__"):
                             async with client as c:
-                                resp = await asyncio.wait_for(c.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+                                resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6), timeout=30)
                         else:
-                            resp = await asyncio.wait_for(client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+                            resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6), timeout=30)
                     except Exception:
                         resp = None
 
@@ -129,7 +130,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                     try:
                         def sync_call():
                             client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
-                            return client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6)
+                            return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, max_tokens=350, temperature=0.6)
                         resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
                     except Exception:
                         resp = None
@@ -140,7 +141,7 @@ async def chat_openai(req: ChatRequest, request: Request):
                     raise RuntimeError("no compatible OpenAI client available or client call failed")
 
                 # Parse response robustly for different client types
-                model_meta = {"provider":"openai","model": getattr(resp, 'model', 'gpt-3.5-turbo')}
+                model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
                 content = None
                 # resp may be a mapping or object with .choices
                 choices = None
