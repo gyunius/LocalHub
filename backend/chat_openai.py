@@ -5,9 +5,11 @@ from collections import deque
 try:
     import openai
     AsyncOpenAI = getattr(openai, "AsyncOpenAI", None)
+    OpenAI = getattr(openai, "OpenAI", None)
 except Exception:
     openai = None
     AsyncOpenAI = None
+    OpenAI = None
 
 from pydantic import BaseModel
 from uuid import uuid4
@@ -110,30 +112,54 @@ async def chat_openai(req: ChatRequest, request: Request):
             attempt += 1
             try:
                 resp = None
-                # Prefer async client if available
+                # Prefer async OpenAI client if available
                 if AsyncOpenAI is not None:
                     try:
                         client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else AsyncOpenAI()
                         if hasattr(client, "__aenter__"):
                             async with client as c:
-                                resp = await asyncio.wait_for(c.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                                resp = await asyncio.wait_for(c.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
                         else:
-                            resp = await asyncio.wait_for(client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                            resp = await asyncio.wait_for(client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
                     except Exception:
                         resp = None
 
-                # Fallback to thread-wrapped sync API if async client not available or failed
-                if resp is None:
-                    resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=12)
+                # If async client not available, try sync OpenAI client (run in thread)
+                if resp is None and OpenAI is not None:
+                    try:
+                        def sync_call():
+                            client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+                            return client.chat.completions.create(model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6)
+                        resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
+                    except Exception:
+                        resp = None
 
+                # Legacy fallback for very old openai versions
+                if resp is None and getattr(openai, 'ChatCompletion', None) is not None:
+                    resp = await asyncio.wait_for(asyncio.to_thread(openai.ChatCompletion.create, model="gpt-3.5-turbo", messages=messages, max_tokens=350, temperature=0.6), timeout=30)
+
+                # Parse response robustly for different client types
                 model_meta = {"provider":"openai","model": getattr(resp, 'model', 'gpt-3.5-turbo')}
-                choice = resp.choices[0] if getattr(resp, 'choices', None) else None
                 content = None
-                if choice:
-                    if getattr(choice, 'message', None):
-                        content = getattr(choice.message, 'content', None)
-                    if not content:
-                        content = getattr(choice, 'text', None)
+                # resp may be a mapping or object with .choices
+                choices = None
+                try:
+                    choices = getattr(resp, 'choices', None) or (resp.get('choices') if isinstance(resp, dict) else None)
+                except Exception:
+                    choices = None
+                if choices:
+                    first = choices[0]
+                    # try different shapes
+                    msg = None
+                    try:
+                        msg = getattr(first, 'message', None) or (first.get('message') if isinstance(first, dict) else None)
+                    except Exception:
+                        msg = None
+                    if msg:
+                        content = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else None)
+                    else:
+                        # older style
+                        content = getattr(first, 'text', None) or (first.get('text') if isinstance(first, dict) else None)
                 openai_resp_text = (content or "").strip()
                 break
             except Exception:
