@@ -12,6 +12,7 @@ except Exception:
     OpenAI = None
 
 from pydantic import BaseModel
+import traceback
 from uuid import uuid4
 from typing import Optional, List
 
@@ -109,6 +110,7 @@ async def chat_openai(req: ChatRequest, request: Request):
     model_meta = {"provider":"openai","model":"unknown"}
     try:
         attempt = 0
+        last_exc = None
         while attempt < 3:
             attempt += 1
             try:
@@ -126,7 +128,8 @@ async def chat_openai(req: ChatRequest, request: Request):
                             token_param = 'max_completion_tokens' if 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL else 'max_tokens'
                             kwargs = {token_param: 350, 'temperature': 0.6}
                             resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
-                    except Exception:
+                    except Exception as ex:
+                        last_exc = traceback.format_exc()
                         resp = None
 
                 # If async client not available, try sync OpenAI client (run in thread)
@@ -138,13 +141,14 @@ async def chat_openai(req: ChatRequest, request: Request):
                             kwargs = {token_param: 350, 'temperature': 0.6}
                             return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
                         resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
-                    except Exception:
+                    except Exception as ex:
+                        last_exc = traceback.format_exc()
                         resp = None
 
                 # Do not call legacy openai.ChatCompletion for openai>=1.0; rely on AsyncOpenAI/OpenAI
                 # If neither client produced a response, raise to outer handler and report error
                 if resp is None:
-                    raise RuntimeError("no compatible OpenAI client available or client call failed")
+                    raise RuntimeError(last_exc or "no compatible OpenAI client available or client call failed")
 
                 # Parse response robustly for different client types
                 model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
