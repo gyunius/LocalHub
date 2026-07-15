@@ -147,7 +147,16 @@ export async function fetchPost(id: string): Promise<PostItem> {
   try {
     const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    const json = await res.json();
+    // normalize backend `body` -> frontend `content`
+    return {
+      id: String(json.id),
+      title: json.title,
+      content: json.body ?? json.content ?? '',
+      created_at: json.created_at,
+      views: json.views,
+      ...json,
+    } as PostItem
   } catch (apiErr) {
     // 폴백: 로컬 mock 파일에서 id로 검색
     try {
@@ -155,7 +164,7 @@ export async function fetchPost(id: string): Promise<PostItem> {
       if (!fileRes.ok) throw apiErr;
       const data = await fileRes.json() as PostItem[] | { items?: PostItem[] };
       const list = Array.isArray(data) ? data : (data.items ?? []);
-      const found = list.find(p => p.id === id);
+      const found = list.find(p => String(p.id) === String(id));
       if (!found) throw new Error('Post not found in mock data');
       return found;
     } catch {

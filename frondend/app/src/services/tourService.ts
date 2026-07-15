@@ -23,16 +23,30 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 export async function fetchTourData(filename: string): Promise<TourApiResponse> {
   const key = filename;
   if (cache.has(key)) return cache.get(key)!;
+>>>>>>> feature/backend-api-sync
+>>>>>>> feature/backend-api-sync
 
   let json: TourApiResponse;
 
   // 1) 먼저 API 시도 (백엔드가 제공하면 여기로)
+  // Try backend API first: /api/pois returns POI items
   try {
-    const apiRes = await fetch(`${API_BASE}/tours?filename=${encodeURIComponent(filename)}`);
-    if (!apiRes.ok) throw new Error(`API error ${apiRes.status}`);
-    json = (await apiRes.json()) as TourApiResponse;
+    const apiRes = await fetch(`/api/pois?limit=10000`);
+    if (apiRes.ok) {
+      const apiJson = await apiRes.json();
+      const items = (apiJson.items || []).map((it: any) => ({
+        ...it,
+        contentid: it.contentid,
+        title: it.title,
+        mapx: it.mapx,
+        mapy: it.mapy,
+        addr1: it.addr1,
+      }));
+      json = { items } as unknown as TourApiResponse;
+    } else {
+      throw new Error('API not ok')
+    }
   } catch {
-    // 2) API 실패하면 정적 파일로 폴백
     const res = await fetch(`/data/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error(`Failed to load ${filename} (${res.status})`);
     json = (await res.json()) as TourApiResponse;

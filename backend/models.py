@@ -33,6 +33,7 @@ class Post(Base):
     title = Column(String, nullable=False, index=True)
     body = Column(Text, nullable=False)
     route = Column(Text)    # JSON-직렬화된 POI contentid 리스트
+    views = Column(Integer, default=0)
     ip = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime)
@@ -48,3 +49,6 @@ class Comment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime)
 
+
+
+    
