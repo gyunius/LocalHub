@@ -1,6 +1,7 @@
 <template>
   <div class="post-form-page">
     <button
+      v-if="!props.embedded"
       type="button"
       class="back-link"
       @click="$router.back()"
@@ -25,10 +26,12 @@
     </button>
 
     <form
+      ref="formEl"
       class="form-card surface-card"
       @submit.prevent="onSubmit"
     >
-      <header class="form-header">
+      <div class="form-instruction">다른 여행자들에게 코스를 추천해 주세요</div>
+      <header v-if="!props.embedded" class="form-header">
         <div
           class="form-header-icon"
           aria-hidden="true"
@@ -74,7 +77,7 @@
 
       <div class="form-divider"></div>
 
-      <div class="form-fields">
+      <div ref="fieldsEl" class="form-fields">
         <label class="form-field">
           <span class="form-label">
             제목
@@ -183,7 +186,7 @@
           type="button"
           class="btn btn-secondary"
           :disabled="loading"
-          @click="$router.back()"
+          @click="onCancel"
         >
           취소
         </button>
@@ -229,26 +232,18 @@
 </template>
 
 <script setup lang="ts">
-import {
-  onMounted,
-  reactive,
-  ref,
-} from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { createPost, fetchPost, updatePost } from '../services/postService'
 
-import {
-  useRoute,
-  useRouter,
-} from 'vue-router'
-
-import {
-  createPost,
-  fetchPost,
-  updatePost,
-} from '../services/postService'
+const props = defineProps<{ embedded?: boolean; routeSelection?: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }> }>()
+const emit = defineEmits<{
+  (e: 'cancel'): void
+  (e: 'submitted', id?: string | number): void
+}>()
 
 const route = useRoute()
 const router = useRouter()
-
 const id = String(route.params.id ?? '')
 const isEdit = Boolean(id)
 
@@ -261,36 +256,69 @@ const form = reactive({
 const loading = ref(false)
 const error = ref('')
 
+const formEl = ref<HTMLFormElement | null>(null)
+const fieldsEl = ref<HTMLElement | null>(null)
+
+function updateFieldsMaxHeight() {
+  if (!props.embedded) return
+  const f = formEl.value
+  const fields = fieldsEl.value
+  if (!f || !fields) return
+  // space from top of form to bottom of viewport
+  const rect = f.getBoundingClientRect()
+  const footer = f.querySelector('.form-actions') as HTMLElement | null
+  const footerH = footer ? footer.getBoundingClientRect().height : 0
+  const margin = 18
+  const available = Math.max(120, window.innerHeight - rect.top - footerH - margin)
+  fields.style.maxHeight = `${available}px`
+  fields.style.overflow = 'auto'
+}
+
+function onWindowResize() { updateFieldsMaxHeight() }
+
+
 onMounted(async () => {
-  if (!isEdit) {
-    return
+  // (경로 미리보기는 지도 쪽으로 이동했습니다)
+  // adjust textarea/form fields height when embedded so page doesn't scroll
+  await nextTick()
+  if (props.embedded) {
+    updateFieldsMaxHeight()
+    window.addEventListener('resize', onWindowResize)
   }
 
-  loading.value = true
-
-  try {
-    const post = await fetchPost(id)
-
-    form.title = post.title
-    form.content = post.content
-  } catch (caughtError) {
-    error.value = (caughtError as Error).message
-  } finally {
-    loading.value = false
+  if (isEdit) {
+    loading.value = true
+    try {
+      const post = await fetchPost(id)
+      form.title = post.title ?? ''
+      form.content = post.content ?? ''
+    } catch (caughtError) {
+      error.value = (caughtError as Error).message
+    } finally {
+      loading.value = false
+    }
   }
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
+})
+
+// routeSelection은 now stored in sessionStorage/map; PostForm no longer renders preview
+
+function onCancel() {
+  if (props.embedded) {
+    emit('cancel')
+  } else {
+    router.back()
+  }
+}
 
 async function onSubmit() {
   error.value = ''
 
-  if (
-    !form.title.trim() ||
-    !form.content.trim() ||
-    !form.password
-  ) {
-    error.value =
-      '제목, 내용, 비밀번호를 모두 입력해주세요.'
-
+  if (!form.title.trim() || !form.content.trim() || !form.password) {
+    error.value = '제목, 내용, 비밀번호를 모두 입력해주세요.'
     return
   }
 
@@ -298,31 +326,56 @@ async function onSubmit() {
 
   try {
     if (isEdit) {
-      await updatePost(id, {
+      const upPayload: any = {
         title: form.title.trim(),
         content: form.content.trim(),
         password: form.password,
-      })
+      }
+      try {
+        const raw = sessionStorage.getItem('localhub.routeSelection')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            parsed.sort((a: any, b: any) => (Number(a.order || 0) - Number(b.order || 0)))
+            upPayload.route = parsed.map((r: any) => String(r.contentid))
+          }
+        }
+      } catch {}
 
-      router.push({
-        name: 'PostDetail',
-        params: {
-          id,
-        },
-      })
+      await updatePost(id, upPayload)
+
+      // clear temporary route selection after successful update
+      try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+
+      if (props.embedded) emit('submitted', id)
+      else router.push({ name: 'PostDetail', params: { id } })
     } else {
-      const created = await createPost({
+      const payload: any = {
         title: form.title.trim(),
         content: form.content.trim(),
         password: form.password,
-      })
+      }
 
-      router.push({
-        name: 'PostDetail',
-        params: {
-          id: (created as any).id,
-        },
-      })
+      // sessionStorage의 routeSelection을 payload에 포함
+      try {
+        const raw = sessionStorage.getItem('localhub.routeSelection')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            parsed.sort((a: any, b: any) => (Number(a.order || 0) - Number(b.order || 0)))
+            payload.route = parsed.map((r: any) => String(r.contentid))
+          }
+        }
+      } catch {}
+
+      const created = await createPost(payload)
+      const createdId = (created as any).id
+
+      // clear temporary route selection after successful create
+      try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+
+      if (props.embedded) emit('submitted', createdId)
+      else router.push({ name: 'PostDetail', params: { id: createdId } })
     }
   } catch (caughtError) {
     error.value = (caughtError as Error).message
@@ -433,6 +486,20 @@ async function onSubmit() {
   border-radius: 999px;
 
   animation: spin 650ms linear infinite;
+}
+
+.form-instruction {
+  margin-bottom: 10px;
+  color: #3b3f4a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.post-form-layout {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 18px;
+  align-items: start;
 }
 
 @media (max-width: 560px) {

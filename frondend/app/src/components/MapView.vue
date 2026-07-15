@@ -61,6 +61,75 @@
       <span v-else>{{ markerCount }}개의 장소</span>
     </div>
 
+    <!-- 장소 인포 패널 -->
+    <div
+      v-if="activeItem"
+      class="map-info-panel surface-card"
+      role="dialog"
+      aria-label="장소 정보"
+    >
+      <button type="button" class="map-info-close" @click="activeItem = null" aria-label="정보 닫기">×</button>
+
+      <h3 class="map-info-title">{{ activeItem.title }}</h3>
+
+      <div class="map-info-media">
+        <img
+          v-if="activeItem.firstimage"
+          :src="activeItem.firstimage"
+          :alt="activeItem.title"
+          class="map-info-image"
+        />
+        <div v-else class="map-info-image placeholder" aria-hidden="true">이미지 없음</div>
+      </div>
+
+      <p class="map-info-desc">
+        {{ getOverview(activeItem) }}
+      </p>
+
+      <div class="map-info-meta">
+        <div><strong>주소</strong>
+          <div class="muted">{{ [activeItem.addr1, activeItem.addr2].filter(Boolean).join(' ') || '주소 정보 없음' }}</div>
+        </div>
+
+        <div style="margin-top:8px"><strong>전화</strong>
+          <div v-if="activeItem.tel"><a :href="`tel:${activeItem.tel}`">{{ activeItem.tel }}</a></div>
+          <div v-else>등록된 번호 없음</div>
+        </div>
+      </div>
+
+      <div class="map-info-actions" style="margin-top:10px">
+        <button type="button" class="btn-sm" @click="activeItem = null">닫기</button>
+        <button
+          v-if="activeItem"
+          type="button"
+          class="btn-sm"
+          style="margin-left:8px"
+          @click="goToPlace(activeItem.contentid)"
+        >
+          자세히 보기
+        </button>
+      </div>
+    </div>
+
+    <!-- 선택된 코스 요약 패널 (지도 오른쪽 아래) -->
+    <div v-if="routeList.length && !props.routeMode" class="map-route-summary surface-card" role="region" aria-label="선택된 코스">
+      <div class="preview-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <strong>현재 경로</strong>
+        <div>
+          <button type="button" class="btn-sm" @click="clearRoute">초기화</button>
+        </div>
+      </div>
+
+      <ul class="preview-list" style="list-style:none;padding:0;margin:0;display:grid;gap:8px">
+        <li v-for="r in routeList" :key="r.contentid" style="display:flex;align-items:center;gap:8px">
+          <div style="width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#7543c7,#6f49c8);color:#fff;font-weight:800">
+            {{ r.order }}
+          </div>
+          <div style="font-size:13px;color:#202635">{{ r.title }}</div>
+        </li>
+      </ul>
+    </div>
+
     <div v-if="loading" class="map-loading" role="status" aria-live="polite">
       <div class="map-loading-card">
         <div class="loading-ring" aria-hidden="true" />
@@ -85,16 +154,19 @@ import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-// markercluster
 import 'leaflet.markercluster/dist/leaflet.markercluster.js'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
-import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore'
+import { selectedDistricts, setSelectedDistricts, toggleDistrict } from '../stores/filterStore'
 
-const props = defineProps<{ filename?: string }>()
+const props = defineProps<{ filename?: string; routeMode?: boolean; editingRoute?: boolean }>()
+const emit = defineEmits<{
+  (e: 'route-changed', route: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>): void
+}>()
+
 const filename = props.filename ?? '서울_관광지.json'
 
 const mapEl = ref<HTMLDivElement | null>(null)
@@ -103,15 +175,36 @@ const error = ref('')
 const allItems = ref<TourItem[]>([])
 const filterOpen = ref(false)
 const searchQuery = ref('')
+const activeItem = ref<TourItem | null>(null)
 
 let map: L.Map | null = null
 let markersLayer: any = null
+let smallMarkersLayer: any = null
 let initialFitDone = false
 
 const router = useRouter()
 
 let fetchTimer: number | null = null
 const DEBOUNCE_MS = 300
+const CLUSTER_MIN_SIZE = 6
+const CLUSTER_RADIUS_PX = 60
+
+const STORAGE_KEY = 'localhub.mapview'
+
+function saveMapView() {
+  if (!map) return
+  try {
+    const c = map.getCenter()
+    const z = map.getZoom()
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: z, ts: Date.now() }))
+  } catch (e) {}
+}
+
+function goToPlace(id: string | number) {
+  saveMapView()
+  sessionStorage.setItem('localhub.restoreOnReturn', '1')
+  router.push({ name: 'Place', params: { id } })
+}
 
 async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const pad = 0.06
@@ -125,7 +218,6 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const bbox = [minLng, minLat, maxLng, maxLat].map((v) => v.toFixed(6)).join(',')
 
   try {
-    // increase limit to fetch more points when user requested
     const res = await fetch(`/api/pois?bbox=${encodeURIComponent(bbox)}&limit=10000`)
     if (res.ok) {
       const json = await res.json()
@@ -133,11 +225,8 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
       allItems.value = items
       return
     }
-  } catch (e) {
-    // ignore and fallback
-  }
+  } catch (e) {}
 
-  // fallback to static loader
   try {
     const data = await getAllItems(filename)
     allItems.value = data
@@ -145,21 +234,6 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
     error.value = '관광지 데이터를 불러오지 못했습니다.'
   }
 }
-
-const markerIcon = L.divIcon({
-  className: 'localhub-marker-wrapper',
-  html: `
-    <span class="localhub-marker" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
-        <path d="M12 21s7-5.07 7-12A7 7 0 1 0 5 9c0 6.93 7 12 7 12Z" fill="currentColor"/>
-        <circle cx="12" cy="9" r="2.7" fill="white"/>
-      </svg>
-    </span>
-  `,
-  iconSize: [38, 44],
-  iconAnchor: [19, 40],
-  tooltipAnchor: [0, -34],
-})
 
 function toNumber(value?: string | number) {
   if (value === undefined || value === null) return Number.NaN
@@ -197,7 +271,6 @@ const filteredDistricts = computed(() => {
   return districts.value.filter(d => d === '전체' || d.toLowerCase().includes(q))
 })
 
-// 변경: 선택이 비어있으면 "선택 없음" 상태(마커 없음)
 const visibleItems = computed(() => {
   const sel = selectedDistricts.value
   if (!sel.length) return []
@@ -222,35 +295,82 @@ const selectedDistrictLabel = computed(() => {
 
 const markerCount = computed(() => visibleCount.value)
 
-function isAllSelected() {
-  const all = districts.value.filter(d => d !== '전체')
-  return all.length > 0 && selectedDistricts.value.length === all.length
-}
-
 function isChecked(d: string) {
-  if (d === '전체') return isAllSelected()
+  if (d === '전체') {
+    const all = districts.value.filter(x => x !== '전체')
+    return selectedDistricts.value.length === all.length
+  }
   return selectedDistricts.value.includes(d)
 }
 
-function toggleDistrict(d: string) {
-  if (d === '전체') {
-    const all = districts.value.filter(x => x !== '전체')
-    if (isAllSelected()) {
-      setSelectedDistricts([])
-    } else {
-      setSelectedDistricts([...all])
+function getOverview(it?: TourItem | null) {
+  return (it as any)?.overview || '서울에서 새롭게 발견할 수 있는 장소입니다. 방문 전 주소와 연락처를 확인해주세요.'
+}
+
+function clearRoute() {
+  routeList.value = []
+  try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+  updateMarkers()
+  emit('route-changed', routeList.value.slice())
+}
+
+// route list 저장 (JSON으로 내보낼 수 있는 형태)
+const routeList = ref<Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>>([])
+
+// 동적으로 아이콘 생성: order 있으면 번호 표시, selected이면 색상 토글, hideCenterDot이면 내부 흰 점 제거
+function buildMarkerIcon(order?: number, selected = false, hideSvg = false) {
+  const numberHtml = typeof order === 'number' ? `<span class="marker-order" aria-hidden="true">${order}</span>` : ''
+  const selectedClass = selected ? ' selected' : ''
+  const svgHtml = hideSvg ? '' : `
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" focusable="false" aria-hidden="true">
+      <path d="M12 21s7-5.07 7-12A7 7 0 1 0 5 9c0 6.93 7 12 7 12Z" fill="currentColor"/>
+      <circle cx="12" cy="9" r="2.7" fill="white"/>
+    </svg>
+  `
+  return L.divIcon({
+    className: 'localhub-marker-wrapper',
+    html: `
+      <span class="localhub-marker${selectedClass}" aria-hidden="true">
+        ${svgHtml}
+        ${numberHtml}
+      </span>
+    `,
+    iconSize: [38, 44],
+    iconAnchor: [19, 40],
+    tooltipAnchor: [0, -34],
+  })
+}
+
+function handleRouteMarkerClick(item: TourItem) {
+  const id = item.contentid
+  const idx = routeList.value.findIndex(r => String(r.contentid) === String(id))
+
+  // 이미 선택된 항목이면 제거 (토글)
+  if (idx >= 0) {
+    routeList.value.splice(idx, 1)
+    // 이후 항목들의 순서를 재계산
+    for (let i = 0; i < routeList.value.length; i++) {
+      routeList.value[i].order = i + 1
     }
+    // 마커 아이콘과 클러스터를 갱신
+    updateMarkers()
+    emit('route-changed', routeList.value.slice())
     return
   }
 
-  const sel = new Set(selectedDistricts.value)
-  if (sel.has(d)) sel.delete(d)
-  else sel.add(d)
-  setSelectedDistricts(Array.from(sel))
+  // 새 항목 추가
+  const lat = toNumber(item.mapy)
+  const lng = toNumber(item.mapx)
+  const order = routeList.value.length + 1
+  routeList.value.push({ contentid: id, title: item.title, lat, lng, order })
+  // 마커 아이콘 갱신
+  updateMarkers()
+  emit('route-changed', routeList.value.slice())
 }
 
 function clearMarkers() {
   if (markersLayer && markersLayer.clearLayers) markersLayer.clearLayers()
+  if (smallMarkersLayer && smallMarkersLayer.clearLayers) smallMarkersLayer.clearLayers()
 }
 
 function updateMarkers() {
@@ -258,49 +378,184 @@ function updateMarkers() {
   clearMarkers()
   const bounds = L.latLngBounds([])
 
+  const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point; isSelected?: boolean }> = []
   for (const item of visibleItems.value) {
     const lat = toNumber(item.mapy)
     const lng = toNumber(item.mapx)
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
 
-    const marker = L.marker([lat, lng], { icon: markerIcon, keyboard: true, title: item.title || '관광지' })
-    markersLayer.addLayer(marker)
+    const selectedIndex = routeList.value.findIndex(r => String(r.contentid) === String(item.contentid))
+    const isSelected = selectedIndex >= 0
+    const order = isSelected ? routeList.value[selectedIndex].order : undefined
+    const icon = buildMarkerIcon(order, isSelected, !!props.routeMode || !!props.editingRoute)
+
+    const marker = L.marker([lat, lng], { icon, keyboard: true, title: item.title || '관광지' })
 
     marker.bindTooltip(
-      `
-        <div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>
-        <div class="localhub-tooltip-address">${escapeHtml(item.addr1 || '주소 정보 없음')}</div>
-      `,
+      `<div class="localhub-tooltip-title">${escapeHtml(item.title || '관광지')}</div>`,
       { direction: 'top', offset: [0, -9], opacity: 1 },
     )
 
     marker.on('click', () => {
-      router.push({ name: 'Place', params: { id: item.contentid } })
+      if (props.routeMode || props.editingRoute) {
+        // Toggle selection
+        handleRouteMarkerClick(item)
+        // Also open the same info panel as normal clicks
+        activeItem.value = item
+        if (map) {
+          try {
+            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
+          } catch (e) { /* ignore */ }
+        }
+      } else {
+        activeItem.value = item
+        if (map) {
+          try {
+            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
+          } catch (e) { /* ignore */ }
+        }
+      }
     })
 
+    entries.push({ item, lat, lng, marker, isSelected })
     bounds.extend([lat, lng])
   }
 
+  if (!bounds.isValid()) return
+
+  for (const e of entries) {
+    e.point = map.latLngToLayerPoint(L.latLng(e.lat, e.lng))
+  }
+
+  const threshold = CLUSTER_RADIUS_PX
+
+  // Build clustering only for non-selected entries so selected markers are always shown
+  const nonSelIndices = entries.map((_, i) => i).filter(i => !entries[i].isSelected)
+  const m = nonSelIndices.length
+  const adj: number[][] = Array.from({ length: m }, () => [])
+  for (let a = 0; a < m; a++) {
+    for (let b = a + 1; b < m; b++) {
+      const i = nonSelIndices[a]
+      const j = nonSelIndices[b]
+      const dx = entries[i].point!.x - entries[j].point!.x
+      const dy = entries[i].point!.y - entries[j].point!.y
+      if (dx * dx + dy * dy <= threshold * threshold) {
+        adj[a].push(b)
+        adj[b].push(a)
+      }
+    }
+  }
+
+  const visited = new Array(m).fill(false)
+  for (let a = 0; a < m; a++) {
+    if (visited[a]) continue
+    const stack = [a]
+    visited[a] = true
+    const compIdxs: number[] = []
+    while (stack.length) {
+      const cur = stack.pop()!
+      compIdxs.push(nonSelIndices[cur])
+      for (const nb of adj[cur]) {
+        if (!visited[nb]) { visited[nb] = true; stack.push(nb) }
+      }
+    }
+
+    if (compIdxs.length >= CLUSTER_MIN_SIZE) {
+      for (const idx of compIdxs) markersLayer.addLayer(entries[idx].marker)
+    } else {
+      for (const idx of compIdxs) smallMarkersLayer.addLayer(entries[idx].marker)
+    }
+  }
+
+  // Always add selected markers individually so they are never clustered
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].isSelected) smallMarkersLayer.addLayer(entries[i].marker)
+  }
+
   if (bounds.isValid()) {
-    // Only auto-fit on initial load (or when no previous fit done).
-    // Prevents snapping back when user manually zooms/pans.
     if (!initialFitDone) {
       map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
       initialFitDone = true
     }
-    // If desired: else if map viewport does not contain bounds, consider fitting.
   }
 }
 
-watch([selectedDistricts, allItems], () => {
+// watch: 마커/데이터/모드 변경 시 다시 그리기
+watch([selectedDistricts, allItems, () => props.routeMode], () => {
   updateMarkers()
+})
+
+// routeMode가 켜질 때 새 경로 시작(원하면 비활성화로 변경 가능)
+watch(() => props.routeMode, (val, oldVal) => {
+  if (val && !oldVal) {
+    // entering route mode: try to restore previous selection from sessionStorage
+    try {
+      const raw = sessionStorage.getItem('localhub.routeSelection')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed) && parsed.length) {
+          routeList.value = parsed.map((r: any, i: number) => ({
+            contentid: r.contentid, title: r.title, lat: r.lat, lng: r.lng, order: r.order ?? (i + 1)
+          }))
+        } else {
+          routeList.value = []
+        }
+      } else {
+        routeList.value = []
+      }
+    } catch (e) {
+      routeList.value = []
+    }
+    emit('route-changed', routeList.value.slice())
+  } else if (!val && oldVal) {
+    // exiting route mode: preserve selections (PostForm may be open to edit)
+    activeItem.value = null
+    emit('route-changed', routeList.value.slice())
+  }
+  updateMarkers()
+})
+
+// MapView.vue: 부모가 선택/카메라 상태를 가져가거나 선택을 초기화, 카메라 리셋을 할 수 있도록 노출
+defineExpose({
+  exportSelection() {
+    try { saveMapView() } catch (e) {}
+    return {
+      routeList: routeList.value.slice(),
+      mapView: map ? { lat: map.getCenter().lat, lng: map.getCenter().lng, zoom: map.getZoom() } : null
+    }
+  },
+  clearRoute() {
+    routeList.value = []
+    try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+    updateMarkers()
+    emit('route-changed', routeList.value.slice())
+  },
+  resetCamera() {
+    if (!map) return
+    try {
+      map.setView([37.5665, 126.978], 11, { animate: true })
+    } catch (e) {}
+    // remove stored camera so future mounts start from default
+    try { sessionStorage.removeItem(STORAGE_KEY) } catch (e) {}
+    initialFitDone = false
+    updateMarkers()
+  }
 })
 
 onMounted(async () => {
   if (!mapEl.value) return
 
   map = L.map(mapEl.value, { preferCanvas: true, zoomControl: false, attributionControl: true }).setView([37.5665, 126.978], 11)
-
+  const saved = sessionStorage.getItem(STORAGE_KEY)
+  if (saved) {
+    try {
+      const s = JSON.parse(saved)
+      if (s && Number.isFinite(s.lat) && Number.isFinite(s.lng) && Number.isFinite(s.zoom)) {
+        map.setView([s.lat, s.lng], s.zoom)
+        initialFitDone = true
+      }
+    } catch (e) {}
+  }
   L.control.zoom({ position: 'topright' }).addTo(map)
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -308,20 +563,22 @@ onMounted(async () => {
     maxZoom: 19,
   }).addTo(map)
 
-  // use marker cluster group with chunked loading for large datasets
   // @ts-ignore
   markersLayer = L.markerClusterGroup({ chunkedLoading: true, chunkProgress: (processed, total, node) => {} })
   markersLayer.addTo(map)
+  smallMarkersLayer = L.layerGroup();
+  smallMarkersLayer.addTo(map);
 
   map.on('moveend', onMapMove)
   map.on('zoomend', onMapMove)
+  map.on('moveend', saveMapView)
+  map.on('zoomend', saveMapView)
+  map.on('click', () => { activeItem.value = null })
 
   try {
-    // initial fetch based on current map bounds
     const bounds = map.getBounds()
     await fetchPoisForBounds(bounds)
 
-    // 기본 동작: 데이터 로드 후 선택이 비어있다면 '모두 선택'으로 초기화
     if (!selectedDistricts.value.length) {
       const all = districts.value.filter(d => d !== '전체')
       setSelectedDistricts([...all])
@@ -339,11 +596,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  saveMapView()
   map?.remove()
   map = null
 })
 
-// listen to map moveend to fetch new pois (debounced)
 function onMapMove() {
   if (!map) return
   if (fetchTimer) clearTimeout(fetchTimer)
@@ -358,7 +615,8 @@ function onMapMove() {
 /* 기존 스타일 유지 */
 .map-shell {
   position: relative;
-  min-height: 555px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   border-radius: 18px;
   background: #e9e6f0;
@@ -367,7 +625,7 @@ function onMapMove() {
 .map-canvas {
   width: 100%;
   height: 100%;
-  min-height: 555px;
+  min-height: 0;
 }
 
 /* ... 나머지 스타일은 기존 파일과 동일합니다 (생략하지 마시고 이미 파일에 포함되어 있음) */
@@ -540,6 +798,24 @@ function onMapMove() {
   transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
+:deep(.localhub-marker.selected) {
+  background: linear-gradient(135deg, #7543c7, #6f49c8);
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(96, 50, 173, 0.28);
+  border: 3px solid rgba(255,255,255,0.96);
+}
+
+:deep(.localhub-marker .marker-order) {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 900;
+  color: #fff;
+  transform: rotate(45deg);
+}
+
 :deep(.localhub-marker svg) {
   transform: rotate(45deg);
 }
@@ -580,6 +856,78 @@ function onMapMove() {
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.map-info-panel {
+  position: absolute;
+  z-index: 850;
+  right: 14px;
+  bottom: 14px;
+  width: 360px;
+  max-width: calc(100% - 28px);
+  padding: 12px;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(20,16,40,0.12);
+  background: #fff;
+}
+
+.map-route-summary {
+  position: absolute;
+  z-index: 860;
+  right: 14px;
+  bottom: 14px;
+  width: 320px;
+  max-width: calc(100% - 28px);
+  padding: 12px;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(20,16,40,0.12);
+  background: #fff;
+}
+
+.map-info-close {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-info-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin: 6px 0 8px;
+}
+
+.map-info-image {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+}
+
+.map-info-desc {
+  margin: 8px 0;
+  font-size: 13px;
+  color: #6f7584;
+}
+
+.map-info-meta .muted {
+  font-size: 13px;
+  color: #485066;
+  margin-top: 4px;
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.06);
+  background: #fff;
+  cursor: pointer;
 }
 
 @media (max-width: 960px) {

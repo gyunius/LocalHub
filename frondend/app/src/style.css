@@ -45,6 +45,8 @@
   box-sizing: border-box;
 }
 
+/* restore default page scrolling (allow body-level scroll) */
+
 html {
   min-width: 320px;
   background: #f5f7fb;
@@ -54,7 +56,6 @@ html {
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
 
   background:
     radial-gradient(
@@ -105,6 +106,14 @@ button {
 
 .app-shell {
   min-height: 100vh;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .app-header {

@@ -160,7 +160,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   displayedViews,
   incrementViewOptimistic,
@@ -328,6 +329,17 @@ onMounted(async () => {
   await loadAll()
   startBackgroundSync()
 })
+
+// reload list when route changes back to Home (e.g. after create/delete)
+const route = useRoute()
+watch(
+  () => route.name,
+  async (name) => {
+    if (name === 'Home') {
+      await loadAll()
+    }
+  },
+)
 </script>
 
 <style scoped>
