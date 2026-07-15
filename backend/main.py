@@ -5,6 +5,8 @@ from pathlib import Path
 import os
 from datetime import datetime
 import json
+from pydantic import BaseModel
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -94,7 +96,8 @@ async def create_post(payload: dict = Body(...)):
     author = payload.get("author")
     password = payload.get("password")
     title = payload.get("title")
-    body = payload.get("body")
+    # support frontend `content` alias
+    body = payload.get("body") or payload.get("content")
     route = json.dumps(payload.get("route") or [], ensure_ascii=False)
     if not password or not title or not body:
         raise HTTPException(status_code=400, detail="password/title/body required")
@@ -106,7 +109,17 @@ async def create_post(payload: dict = Body(...)):
         return {"id": post.id, "created_at": post.created_at.isoformat()}
 
 @app.get("/api/posts")
-async def list_posts(limit: int = 20, offset: int = 0):
+async def list_posts(page: int | None = None, limit: int = 20, offset: int = 0):
+    # support `page` param from frontend (page -> offset)
+    if page is not None:
+        try:
+            pnum = int(page)
+            if pnum < 1:
+                pnum = 1
+        except Exception:
+            pnum = 1
+        offset = (pnum - 1) * limit
+
     async with AsyncSessionLocal() as session:
         stmt = select(Post).order_by(Post.created_at.desc()).limit(limit).offset(offset)
         res = await session.execute(stmt)
@@ -118,6 +131,7 @@ async def list_posts(limit: int = 20, offset: int = 0):
                 "author": p.author,
                 "title": p.title,
                 "route": json.loads(p.route) if p.route else [],
+                "views": getattr(p, 'views', 0),
                 "created_at": p.created_at.isoformat() if p.created_at else None
             })
         return {"count": len(items), "items": items}
@@ -150,8 +164,11 @@ async def update_post(post_id: int, payload: dict = Body(...)):
             raise HTTPException(status_code=403, detail="Forbidden")
         if payload.get("title"):
             p.title = payload.get("title")
+        # accept `content` alias as well
         if payload.get("body"):
             p.body = payload.get("body")
+        elif payload.get("content"):
+            p.body = payload.get("content")
         if "route" in payload:
             p.route = json.dumps(payload.get("route") or [], ensure_ascii=False)
         p.modified_at = datetime.utcnow()
@@ -159,13 +176,63 @@ async def update_post(post_id: int, payload: dict = Body(...)):
         await session.commit()
         return {"ok": True}
 
+
+    # Views sync endpoint used by frontend optimistic queue
+    @app.post("/api/posts/{post_id}/views")
+    async def post_views(post_id: int, payload: dict = Body(...)):
+        delta = payload.get("delta")
+        try:
+            delta = int(delta or 0)
+        except Exception:
+            delta = 0
+        if delta == 0:
+            async with AsyncSessionLocal() as session:
+                p = await session.get(Post, post_id)
+                if not p:
+                    raise HTTPException(status_code=404, detail="Not found")
+                return {"ok": True, "views": getattr(p, 'views', 0)}
+
+        async with AsyncSessionLocal() as session:
+            p = await session.get(Post, post_id)
+            if not p:
+                raise HTTPException(status_code=404, detail="Not found")
+            p.views = (p.views or 0) + delta
+            session.add(p)
+            await session.commit()
+            await session.refresh(p)
+            return {"ok": True, "views": p.views}
+
+
+    # Password verification endpoint used by frontend
+    @app.post("/api/posts/{post_id}/verify")
+    async def verify_post_password(post_id: int, payload: dict = Body(...)):
+        password = payload.get("password")
+        if not password:
+            raise HTTPException(status_code=400, detail="password required")
+        async with AsyncSessionLocal() as session:
+            p = await session.get(Post, post_id)
+            if not p:
+                raise HTTPException(status_code=404, detail="Not found")
+            if _check_password(p.password, password):
+                return {"ok": True}
+            raise HTTPException(status_code=403, detail="Forbidden")
+
 @app.delete("/api/posts/{post_id}")
-async def delete_post(post_id: int, password: str = Query(...)):
+async def delete_post(post_id: int, password: str = Query(None), payload: dict = Body(None)):
+    # accept password either via query or JSON body (frontend may send JSON)
+    provided = None
+    if payload and isinstance(payload, dict):
+        provided = payload.get("password")
+    if not provided:
+        provided = password
+    if not provided:
+        raise HTTPException(status_code=400, detail="password required")
+
     async with AsyncSessionLocal() as session:
         p = await session.get(Post, post_id)
         if not p:
             raise HTTPException(status_code=404, detail="Not found")
-        if not _check_password(p.password, password):
+        if not _check_password(p.password, provided):
             raise HTTPException(status_code=403, detail="Forbidden")
         await session.delete(p)
         await session.commit()
@@ -231,3 +298,8 @@ async def delete_comment(comment_id: int, password: str = Query(...)):
 
 def _check_password(stored: str, provided: str) -> bool:
     return stored == provided
+
+class CommentCreate(BaseModel):
+    author: Optional[str] = None
+    password: str
+    body: str
