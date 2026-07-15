@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, text
 
 from models import Base, POI, Post, Comment
+import migrate as migrator
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 DB_PATH = os.getenv("DB_PATH") or str(Path(__file__).parent / "data" / "localhub.db")
@@ -87,6 +88,15 @@ async def list_pois(q: str | None = Query(None), region: str | None = None, cont
 
 @app.on_event("startup")
 async def ensure_indexes():
+    # Run migration to ensure DB schema and data are present. This allows
+    # running `python -m uvicorn main:app ...` without a separate migrate step.
+    try:
+        data_dir, db_path = migrator.default_paths()
+        await migrator.migrate(data_dir, db_path)
+    except Exception as e:
+        # Log migration errors but continue to attempt index creation
+        print(f"Migration failed: {e}")
+
     # create indexes for mapx/mapy to speed up bbox queries
     async with engine.begin() as conn:
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_poi_mapx ON poi(mapx);"))
