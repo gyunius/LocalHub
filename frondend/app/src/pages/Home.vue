@@ -47,7 +47,7 @@
     <section class="workspace" aria-label="서울 관광 지도와 커뮤니티">
       <aside class="feed-panel surface-card">
         <div class="panel-header">
-          <div>
+          <div v-if="!composing">
             <div class="eyebrow">Community</div>
             <h2 class="panel-title">지금 서울 이야기</h2>
             <p class="panel-description">
@@ -55,32 +55,52 @@
             </p>
           </div>
 
-          <router-link
-            to="/posts/new"
-            class="icon-button"
-            aria-label="새 글 쓰기"
-            title="새 글 쓰기"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="18"
-              height="18"
-              fill="none"
-              aria-hidden="true"
+          <div class="panel-actions" style="display:inline-flex;gap:8px;align-items:center">
+            <router-link
+              v-if="!composing"
+              to="/posts/new"
+              class="icon-button"
+              aria-label="새 글 쓰기"
+              title="새 글 쓰기"
             >
-              <path
-                d="M12 5v14M5 12h14"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
-          </router-link>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </router-link>
+
+            <button
+              v-if="!composing"
+              type="button"
+              class="icon-button"
+              title="경로로 글쓰기"
+              @click="startComposerFromRoute"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true">
+                <path d="M3 21v-3l11-11 3 3L9 21H3z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+
+            <button
+              v-else
+              type="button"
+              class="icon-button"
+              title="작성 취소"
+              @click="onComposerCancel"
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         <div class="soft-divider"></div>
 
-        <BoardList filename="/api/posts?limit=20" :page-size="3" />
+        <div v-if="composing" style="padding:12px;">
+          <PostForm :embedded="true" :routeSelection="currentRoute" @cancel="onComposerCancel" @submitted="onComposerSubmitted" />
+        </div>
+
+        <div v-else>
+          <BoardList :key="boardKey" filename="/api/posts?limit=20" :page-size="3" />
+        </div>
       </aside>
 
       <section class="map-panel surface-card">
@@ -96,7 +116,7 @@
               :class="['btn', routeMode ? 'btn-inverted' : 'btn-primary']"
               @click="onCreateRoute"
             >
-              {{ routeMode ? '코스 선택 완료' : '여행 경로 만들기' }}
+              {{ routeMode ? '코스 선택 완료' : composing ? '코스 수정' : '여행 경로 만들기' }}
             </button>
           </div>
 
@@ -106,7 +126,7 @@
           </div>
         </div>
 
-        <MapView ref="mapViewRef" :routeMode="routeMode" @route-changed="onRouteChanged" />
+        <MapView ref="mapViewRef" :routeMode="routeMode" :editingRoute="composing" @route-changed="onRouteChanged" />
       </section>
     </section>
   </div>
@@ -114,23 +134,39 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 import BoardList from '../components/BoardList.vue'
 import MapView from '../components/MapView.vue'
+import PostForm from './PostForm.vue'
 
-const router = useRouter()
+// route selection mode (지도에서 장소를 선택하는 모드)
 const routeMode = ref(false)
+// 내부적으로 MapView에서 emit 되는 현재 routeList (선택 중간 상태)
 const currentRoute = ref<any[]>([])
+
+// feed-panel 쪽 composer 표시 상태 (true이면 PostForm을 feed-panel에 렌더)
+const composing = ref(false)
+
+// BoardList를 강제 리로드할 때 변경하는 키
+const boardKey = ref<number>(0)
+
+// ref to MapView component to call exportSelection()
 const mapViewRef = ref<any>(null)
 
+function startComposerFromRoute() {
+  // shortcut: 바로 글쓰기(선택한 게 있으면 composer 열기), 또는 토글 없이 사용 가능
+  routeMode.value = true
+  composing.value = false
+}
+
+// 버튼: 경로 모드 토글 / 완료 처리
 function onCreateRoute() {
-  // start selecting
   if (!routeMode.value) {
     routeMode.value = true
+    composing.value = false
     return
   }
 
-  // finish selecting -> export selection + map state, 저장 후 글쓰기 페이지로 이동
+  // routeMode 가 켜진 상태에서 버튼을 다시 누르면 '완료' 동작
   const exportData = mapViewRef.value?.exportSelection?.()
   const selected = exportData?.routeList ?? currentRoute.value ?? []
   const mapView = exportData?.mapView ?? null
@@ -146,23 +182,47 @@ function onCreateRoute() {
     if (mapView) sessionStorage.setItem('localhub.mapview', JSON.stringify({ ...mapView, ts: Date.now() }))
   } catch (e) {}
 
-  // turn off selection mode (MapView will clear its internal routeList)
+  // 닫고 feed-panel에 composer 표시
   routeMode.value = false
-
-  // 이동: 새 글 쓰기 페이지
-  router.push({ name: 'PostNew' })
+  composing.value = true
 }
 
+// MapView로부터 route 변경 수신
 function onRouteChanged(list: any[]) {
   currentRoute.value = list
-  console.log('route list updated', list)
+  // composer가 열려있으면 선택 목록을 sessionStorage에 즉시 반영해서 PostForm와 동기화
+  if (composing.value) {
+    try { sessionStorage.setItem('localhub.routeSelection', JSON.stringify(list)) } catch (e) {}
+  }
+}
+
+// composer 이벤트 핸들러
+function onComposerCancel() {
+  composing.value = false
+  // 보드 새로고침 트리거 (key 변경)
+  boardKey.value = Date.now()
+}
+
+function onComposerSubmitted() {
+  composing.value = false
+  // BoardList를 새로고침
+  boardKey.value = Date.now()
+  // 선택 데이터는 제거
+  try { sessionStorage.removeItem('localhub.routeSelection') } catch(e) {}
+  // 지도 선택도 초기화
+  try { mapViewRef.value?.clearRoute?.() } catch (e) {}
+  // 카메라를 초기 상태로 되돌림
+  try { mapViewRef.value?.resetCamera?.() } catch (e) {}
 }
 </script>
 
 <style scoped>
 .home-page {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 26px;
+  height: 100%;
+  min-height: 0;
 }
 
 .home-intro {
@@ -258,22 +318,26 @@ function onRouteChanged(list: any[]) {
 }
 
 .workspace {
-  min-height: 640px;
+  /* let workspace fill remaining vertical space */
+  flex: 1 1 auto;
+  min-height: 0;
 
   display: grid;
   grid-template-columns: minmax(300px, 355px) minmax(0, 1fr);
   gap: 18px;
+  overflow: hidden;
 }
 
 .feed-panel,
 .map-panel {
   min-width: 0;
-  overflow: hidden;
 }
 
 .feed-panel {
   display: flex;
   flex-direction: column;
+  overflow: auto;
+  min-height: 0;
 }
 
 .map-panel {
@@ -281,6 +345,7 @@ function onRouteChanged(list: any[]) {
 
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .map-panel-header {

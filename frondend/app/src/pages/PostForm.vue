@@ -1,6 +1,7 @@
 <template>
   <div class="post-form-page">
     <button
+      v-if="!props.embedded"
       type="button"
       class="back-link"
       @click="$router.back()"
@@ -25,10 +26,12 @@
     </button>
 
     <form
+      ref="formEl"
       class="form-card surface-card"
       @submit.prevent="onSubmit"
     >
-      <header class="form-header">
+      <div class="form-instruction">다른 여행자들에게 코스를 추천해 주세요</div>
+      <header v-if="!props.embedded" class="form-header">
         <div
           class="form-header-icon"
           aria-hidden="true"
@@ -74,7 +77,7 @@
 
       <div class="form-divider"></div>
 
-      <div class="form-fields">
+      <div ref="fieldsEl" class="form-fields">
         <label class="form-field">
           <span class="form-label">
             제목
@@ -183,7 +186,7 @@
           type="button"
           class="btn btn-secondary"
           :disabled="loading"
-          @click="$router.back()"
+          @click="onCancel"
         >
           취소
         </button>
@@ -225,39 +228,19 @@
         </button>
       </footer>
     </form>
-    <!-- 선택 미리보기 -->
-    <aside class="route-preview surface-card">
-      <div class="preview-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <strong>선택한 장소</strong>
-      </div>
-
-      <div ref="previewMapEl" class="preview-map" style="height:320px;border-radius:8px;overflow:hidden;margin-bottom:10px"></div>
-
-      <ul class="preview-list" style="list-style:none;padding:0;margin:0;display:grid;gap:8px">
-        <li v-for="p in selectedPlaces" :key="p.contentid" style="display:flex;align-items:center;gap:8px">
-          <div style="width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#7543c7,#6f49c8);color:#fff;font-weight:800">
-            {{ p.order }}
-          </div>
-          <div style="font-size:13px;color:#202635">{{ p.title }}</div>
-        </li>
-      </ul>
-    </aside>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { createPost, fetchPost, updatePost } from '../services/postService'
-import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
 
-const previewMapEl = ref<HTMLDivElement | null>(null)
-const selectedPlaces = ref<
-  Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>
->([])
-let previewMap: L.Map | null = null
-let previewLayer: L.LayerGroup | null = null
+const props = defineProps<{ embedded?: boolean; routeSelection?: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }> }>()
+const emit = defineEmits<{
+  (e: 'cancel'): void
+  (e: 'submitted', id?: string | number): void
+}>()
 
 const route = useRoute()
 const router = useRouter()
@@ -273,54 +256,36 @@ const form = reactive({
 const loading = ref(false)
 const error = ref('')
 
+const formEl = ref<HTMLFormElement | null>(null)
+const fieldsEl = ref<HTMLElement | null>(null)
+
+function updateFieldsMaxHeight() {
+  if (!props.embedded) return
+  const f = formEl.value
+  const fields = fieldsEl.value
+  if (!f || !fields) return
+  // space from top of form to bottom of viewport
+  const rect = f.getBoundingClientRect()
+  const footer = f.querySelector('.form-actions') as HTMLElement | null
+  const footerH = footer ? footer.getBoundingClientRect().height : 0
+  const margin = 18
+  const available = Math.max(120, window.innerHeight - rect.top - footerH - margin)
+  fields.style.maxHeight = `${available}px`
+  fields.style.overflow = 'auto'
+}
+
+function onWindowResize() { updateFieldsMaxHeight() }
+
+
 onMounted(async () => {
-  // load selected places (from Home -> sessionStorage)
-  try {
-    const raw = sessionStorage.getItem('localhub.routeSelection')
-    if (raw) selectedPlaces.value = JSON.parse(raw)
-  } catch {
-    /* ignore parse errors */
+  // (경로 미리보기는 지도 쪽으로 이동했습니다)
+  // adjust textarea/form fields height when embedded so page doesn't scroll
+  await nextTick()
+  if (props.embedded) {
+    updateFieldsMaxHeight()
+    window.addEventListener('resize', onWindowResize)
   }
 
-  // initialize preview map if we have selections
-  if (selectedPlaces.value.length > 0 && previewMapEl.value) {
-    const first = selectedPlaces.value[0]
-    previewMap = L.map(previewMapEl.value, {
-      zoomControl: false,
-      attributionControl: false,
-    }).setView([first.lat ?? 37.5665, first.lng ?? 126.978], 13)
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(previewMap)
-    previewLayer = L.layerGroup().addTo(previewMap)
-
-    selectedPlaces.value.forEach((p) => {
-      const iconHtml = `<div style="
-        width:34px;height:34px;border-radius:8px;
-        background:linear-gradient(135deg,#7543c7,#6f49c8);
-        color:#fff;display:grid;place-items:center;font-weight:900">
-          ${p.order}
-        </div>`
-      const icon = L.divIcon({ html: iconHtml, className: '', iconSize: [34, 34], iconAnchor: [17, 34] })
-      L.marker([p.lat ?? 0, p.lng ?? 0], { icon }).addTo(previewLayer as L.LayerGroup)
-    })
-
-    // restore camera if available
-    try {
-      const mvRaw = sessionStorage.getItem('localhub.mapview')
-      if (mvRaw) {
-        const mv = JSON.parse(mvRaw)
-        if (mv && Number.isFinite(mv.lat) && Number.isFinite(mv.lng) && Number.isFinite(mv.zoom)) {
-          previewMap.setView([mv.lat, mv.lng], mv.zoom)
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    setTimeout(() => previewMap?.invalidateSize(), 50)
-  }
-
-  // if editing an existing post, load it
   if (isEdit) {
     loading.value = true
     try {
@@ -336,10 +301,18 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  previewMap?.remove()
-  previewMap = null
-  previewLayer = null
+  window.removeEventListener('resize', onWindowResize)
 })
+
+// routeSelection은 now stored in sessionStorage/map; PostForm no longer renders preview
+
+function onCancel() {
+  if (props.embedded) {
+    emit('cancel')
+  } else {
+    router.back()
+  }
+}
 
 async function onSubmit() {
   error.value = ''
@@ -350,22 +323,59 @@ async function onSubmit() {
   }
 
   loading.value = true
+
   try {
     if (isEdit) {
-      await updatePost(id, {
+      const upPayload: any = {
         title: form.title.trim(),
         content: form.content.trim(),
         password: form.password,
-      })
-      router.push({ name: 'PostDetail', params: { id } })
+      }
+      try {
+        const raw = sessionStorage.getItem('localhub.routeSelection')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            parsed.sort((a: any, b: any) => (Number(a.order || 0) - Number(b.order || 0)))
+            upPayload.route = parsed.map((r: any) => String(r.contentid))
+          }
+        }
+      } catch {}
+
+      await updatePost(id, upPayload)
+
+      // clear temporary route selection after successful update
+      try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+
+      if (props.embedded) emit('submitted', id)
+      else router.push({ name: 'PostDetail', params: { id } })
     } else {
-      // NOTE: selectedPlaces is available here if you want to include route data in the payload later
-      const created = await createPost({
+      const payload: any = {
         title: form.title.trim(),
         content: form.content.trim(),
         password: form.password,
-      })
-      router.push({ name: 'PostDetail', params: { id: (created as any).id } })
+      }
+
+      // sessionStorage의 routeSelection을 payload에 포함
+      try {
+        const raw = sessionStorage.getItem('localhub.routeSelection')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            parsed.sort((a: any, b: any) => (Number(a.order || 0) - Number(b.order || 0)))
+            payload.route = parsed.map((r: any) => String(r.contentid))
+          }
+        }
+      } catch {}
+
+      const created = await createPost(payload)
+      const createdId = (created as any).id
+
+      // clear temporary route selection after successful create
+      try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+
+      if (props.embedded) emit('submitted', createdId)
+      else router.push({ name: 'PostDetail', params: { id: createdId } })
     }
   } catch (caughtError) {
     error.value = (caughtError as Error).message
@@ -476,6 +486,13 @@ async function onSubmit() {
   border-radius: 999px;
 
   animation: spin 650ms linear infinite;
+}
+
+.form-instruction {
+  margin-bottom: 10px;
+  color: #3b3f4a;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .post-form-layout {

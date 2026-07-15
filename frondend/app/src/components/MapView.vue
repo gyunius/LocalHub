@@ -83,7 +83,7 @@
       </div>
 
       <p class="map-info-desc">
-        {{ activeItem.overview || '서울에서 새롭게 발견할 수 있는 장소입니다. 방문 전 주소와 연락처를 확인해주세요.' }}
+        {{ getOverview(activeItem) }}
       </p>
 
       <div class="map-info-meta">
@@ -109,6 +109,25 @@
           자세히 보기
         </button>
       </div>
+    </div>
+
+    <!-- 선택된 코스 요약 패널 (지도 오른쪽 아래) -->
+    <div v-if="routeList.length && !props.routeMode" class="map-route-summary surface-card" role="region" aria-label="선택된 코스">
+      <div class="preview-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <strong>현재 경로</strong>
+        <div>
+          <button type="button" class="btn-sm" @click="clearRoute">초기화</button>
+        </div>
+      </div>
+
+      <ul class="preview-list" style="list-style:none;padding:0;margin:0;display:grid;gap:8px">
+        <li v-for="r in routeList" :key="r.contentid" style="display:flex;align-items:center;gap:8px">
+          <div style="width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#7543c7,#6f49c8);color:#fff;font-weight:800">
+            {{ r.order }}
+          </div>
+          <div style="font-size:13px;color:#202635">{{ r.title }}</div>
+        </li>
+      </ul>
     </div>
 
     <div v-if="loading" class="map-loading" role="status" aria-live="polite">
@@ -141,9 +160,9 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
-import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore'
+import { selectedDistricts, setSelectedDistricts, toggleDistrict } from '../stores/filterStore'
 
-const props = defineProps<{ filename?: string; routeMode?: boolean }>()
+const props = defineProps<{ filename?: string; routeMode?: boolean; editingRoute?: boolean }>()
 const emit = defineEmits<{
   (e: 'route-changed', route: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>): void
 }>()
@@ -276,6 +295,25 @@ const selectedDistrictLabel = computed(() => {
 
 const markerCount = computed(() => visibleCount.value)
 
+function isChecked(d: string) {
+  if (d === '전체') {
+    const all = districts.value.filter(x => x !== '전체')
+    return selectedDistricts.value.length === all.length
+  }
+  return selectedDistricts.value.includes(d)
+}
+
+function getOverview(it?: TourItem | null) {
+  return (it as any)?.overview || '서울에서 새롭게 발견할 수 있는 장소입니다. 방문 전 주소와 연락처를 확인해주세요.'
+}
+
+function clearRoute() {
+  routeList.value = []
+  try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+  updateMarkers()
+  emit('route-changed', routeList.value.slice())
+}
+
 // route list 저장 (JSON으로 내보낼 수 있는 형태)
 const routeList = ref<Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>>([])
 
@@ -303,15 +341,30 @@ function buildMarkerIcon(order?: number, selected = false, hideSvg = false) {
   })
 }
 
-function handleRouteMarkerClick(item: TourItem, marker: L.Marker) {
+function handleRouteMarkerClick(item: TourItem) {
   const id = item.contentid
-  if (routeList.value.find(r => String(r.contentid) === String(id))) return
+  const idx = routeList.value.findIndex(r => String(r.contentid) === String(id))
+
+  // 이미 선택된 항목이면 제거 (토글)
+  if (idx >= 0) {
+    routeList.value.splice(idx, 1)
+    // 이후 항목들의 순서를 재계산
+    for (let i = 0; i < routeList.value.length; i++) {
+      routeList.value[i].order = i + 1
+    }
+    // 마커 아이콘과 클러스터를 갱신
+    updateMarkers()
+    emit('route-changed', routeList.value.slice())
+    return
+  }
+
+  // 새 항목 추가
   const lat = toNumber(item.mapy)
   const lng = toNumber(item.mapx)
   const order = routeList.value.length + 1
   routeList.value.push({ contentid: id, title: item.title, lat, lng, order })
-  // 즉시 아이콘 업데이트
-  marker.setIcon(buildMarkerIcon(order, true, !!props.routeMode))
+  // 마커 아이콘 갱신
+  updateMarkers()
   emit('route-changed', routeList.value.slice())
 }
 
@@ -325,7 +378,7 @@ function updateMarkers() {
   clearMarkers()
   const bounds = L.latLngBounds([])
 
-  const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point }> = []
+  const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point; isSelected?: boolean }> = []
   for (const item of visibleItems.value) {
     const lat = toNumber(item.mapy)
     const lng = toNumber(item.mapx)
@@ -334,7 +387,7 @@ function updateMarkers() {
     const selectedIndex = routeList.value.findIndex(r => String(r.contentid) === String(item.contentid))
     const isSelected = selectedIndex >= 0
     const order = isSelected ? routeList.value[selectedIndex].order : undefined
-    const icon = buildMarkerIcon(order, isSelected, !!props.routeMode)
+    const icon = buildMarkerIcon(order, isSelected, !!props.routeMode || !!props.editingRoute)
 
     const marker = L.marker([lat, lng], { icon, keyboard: true, title: item.title || '관광지' })
 
@@ -344,8 +397,16 @@ function updateMarkers() {
     )
 
     marker.on('click', () => {
-      if (props.routeMode) {
-        handleRouteMarkerClick(item, marker)
+      if (props.routeMode || props.editingRoute) {
+        // Toggle selection
+        handleRouteMarkerClick(item)
+        // Also open the same info panel as normal clicks
+        activeItem.value = item
+        if (map) {
+          try {
+            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
+          } catch (e) { /* ignore */ }
+        }
       } else {
         activeItem.value = item
         if (map) {
@@ -356,7 +417,7 @@ function updateMarkers() {
       }
     })
 
-    entries.push({ item, lat, lng, marker })
+    entries.push({ item, lat, lng, marker, isSelected })
     bounds.extend([lat, lng])
   }
 
@@ -367,38 +428,48 @@ function updateMarkers() {
   }
 
   const threshold = CLUSTER_RADIUS_PX
-  const n = entries.length
-  const adj: number[][] = Array.from({ length: n }, () => [])
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
+
+  // Build clustering only for non-selected entries so selected markers are always shown
+  const nonSelIndices = entries.map((_, i) => i).filter(i => !entries[i].isSelected)
+  const m = nonSelIndices.length
+  const adj: number[][] = Array.from({ length: m }, () => [])
+  for (let a = 0; a < m; a++) {
+    for (let b = a + 1; b < m; b++) {
+      const i = nonSelIndices[a]
+      const j = nonSelIndices[b]
       const dx = entries[i].point!.x - entries[j].point!.x
       const dy = entries[i].point!.y - entries[j].point!.y
       if (dx * dx + dy * dy <= threshold * threshold) {
-        adj[i].push(j)
-        adj[j].push(i)
+        adj[a].push(b)
+        adj[b].push(a)
       }
     }
   }
 
-  const visited = new Array(n).fill(false)
-  for (let i = 0; i < n; i++) {
-    if (visited[i]) continue
-    const stack = [i]
-    visited[i] = true
-    const comp: number[] = []
+  const visited = new Array(m).fill(false)
+  for (let a = 0; a < m; a++) {
+    if (visited[a]) continue
+    const stack = [a]
+    visited[a] = true
+    const compIdxs: number[] = []
     while (stack.length) {
       const cur = stack.pop()!
-      comp.push(cur)
+      compIdxs.push(nonSelIndices[cur])
       for (const nb of adj[cur]) {
         if (!visited[nb]) { visited[nb] = true; stack.push(nb) }
       }
     }
 
-    if (comp.length >= CLUSTER_MIN_SIZE) {
-      for (const idx of comp) markersLayer.addLayer(entries[idx].marker)
+    if (compIdxs.length >= CLUSTER_MIN_SIZE) {
+      for (const idx of compIdxs) markersLayer.addLayer(entries[idx].marker)
     } else {
-      for (const idx of comp) smallMarkersLayer.addLayer(entries[idx].marker)
+      for (const idx of compIdxs) smallMarkersLayer.addLayer(entries[idx].marker)
     }
+  }
+
+  // Always add selected markers individually so they are never clustered
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].isSelected) smallMarkersLayer.addLayer(entries[i].marker)
   }
 
   if (bounds.isValid()) {
@@ -417,19 +488,34 @@ watch([selectedDistricts, allItems, () => props.routeMode], () => {
 // routeMode가 켜질 때 새 경로 시작(원하면 비활성화로 변경 가능)
 watch(() => props.routeMode, (val, oldVal) => {
   if (val && !oldVal) {
-    // entering route mode: start fresh
-    routeList.value = []
+    // entering route mode: try to restore previous selection from sessionStorage
+    try {
+      const raw = sessionStorage.getItem('localhub.routeSelection')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed) && parsed.length) {
+          routeList.value = parsed.map((r: any, i: number) => ({
+            contentid: r.contentid, title: r.title, lat: r.lat, lng: r.lng, order: r.order ?? (i + 1)
+          }))
+        } else {
+          routeList.value = []
+        }
+      } else {
+        routeList.value = []
+      }
+    } catch (e) {
+      routeList.value = []
+    }
     emit('route-changed', routeList.value.slice())
   } else if (!val && oldVal) {
-    // exiting route mode: clear selections and restore icons
-    routeList.value = []
+    // exiting route mode: preserve selections (PostForm may be open to edit)
     activeItem.value = null
     emit('route-changed', routeList.value.slice())
   }
   updateMarkers()
 })
 
-// MapView.vue: 부모가 선택/카메라 상태를 가져갈 수 있도록 노출
+// MapView.vue: 부모가 선택/카메라 상태를 가져가거나 선택을 초기화, 카메라 리셋을 할 수 있도록 노출
 defineExpose({
   exportSelection() {
     try { saveMapView() } catch (e) {}
@@ -437,6 +523,22 @@ defineExpose({
       routeList: routeList.value.slice(),
       mapView: map ? { lat: map.getCenter().lat, lng: map.getCenter().lng, zoom: map.getZoom() } : null
     }
+  },
+  clearRoute() {
+    routeList.value = []
+    try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
+    updateMarkers()
+    emit('route-changed', routeList.value.slice())
+  },
+  resetCamera() {
+    if (!map) return
+    try {
+      map.setView([37.5665, 126.978], 11, { animate: true })
+    } catch (e) {}
+    // remove stored camera so future mounts start from default
+    try { sessionStorage.removeItem(STORAGE_KEY) } catch (e) {}
+    initialFitDone = false
+    updateMarkers()
   }
 })
 
@@ -513,7 +615,8 @@ function onMapMove() {
 /* 기존 스타일 유지 */
 .map-shell {
   position: relative;
-  min-height: 555px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   border-radius: 18px;
   background: #e9e6f0;
@@ -522,7 +625,7 @@ function onMapMove() {
 .map-canvas {
   width: 100%;
   height: 100%;
-  min-height: 555px;
+  min-height: 0;
 }
 
 /* ... 나머지 스타일은 기존 파일과 동일합니다 (생략하지 마시고 이미 파일에 포함되어 있음) */
@@ -761,6 +864,19 @@ function onMapMove() {
   right: 14px;
   bottom: 14px;
   width: 360px;
+  max-width: calc(100% - 28px);
+  padding: 12px;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(20,16,40,0.12);
+  background: #fff;
+}
+
+.map-route-summary {
+  position: absolute;
+  z-index: 860;
+  right: 14px;
+  bottom: 14px;
+  width: 320px;
   max-width: calc(100% - 28px);
   padding: 12px;
   border-radius: 12px;
