@@ -68,7 +68,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import type { TourItem } from '../types/tour';
 import { getAllItems } from '../services/tourService';
 import PlaceCard from './PlaceCard.vue';
-import { selectedDistricts, setSelectedDistricts } from '../stores/filterStore';
+import { selectedDistricts, setSelectedDistricts, selectedContentTypes, setSelectedContentTypes } from '../stores/filterStore';
 
 const props = defineProps<{ filename?: string; pageSize?: number }>();
 const filename = props.filename ?? '서울_관광지.json';
@@ -91,10 +91,13 @@ function extractGu(addr?: string): string | null {
 const filteredItems = computed(() => {
   const sel = selectedDistricts.value;
   if (!sel.length) return [];
+  const selTypes = selectedContentTypes.value;
+  if (!selTypes.length) return [];
   return allItems.value.filter((it) => {
     if (!it) return false;
     const g = extractGu(it.addr1) || '기타';
-    return sel.includes(g);
+    const typeId = String((it as any).contenttypeid ?? it.contenttypeid ?? '')
+    return sel.includes(g) && selTypes.includes(typeId);
   });
 });
 
@@ -119,6 +122,15 @@ async function loadAll() {
       }
       const all = Array.from(s).sort((a, b) => a.localeCompare(b, 'ko'));
       setSelectedDistricts(all);
+    }
+
+    if (!selectedContentTypes.value.length) {
+      const sTypes = new Set<string>();
+      for (const it of allItems.value) {
+        const id = String((it as any).contenttypeid ?? it.contenttypeid ?? '')
+        if (id) sTypes.add(id)
+      }
+      setSelectedContentTypes(Array.from(sTypes).sort((a, b) => Number(a) - Number(b)))
     }
   } catch (e) {
     error.value = (e as Error).message;

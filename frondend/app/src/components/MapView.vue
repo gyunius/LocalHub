@@ -6,35 +6,85 @@
       aria-label="서울 관광지 지도"
     ></div>
 
+    <!-- 필터 오버레이: 시설(새 필터) -->
+    <div class="absolute" style="left:14px; bottom:160px; z-index:800;">
+      <div class="relative">
+        <button @click="contentFilterOpen = !contentFilterOpen" class="bg-white text-sm px-3 py-1 rounded border">
+          시설
+        </button>
+
+        <div v-if="contentFilterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="시설">
+          <input
+            v-model="contentSearchQuery"
+            type="search"
+            class="filter-search"
+            placeholder="시설명으로 검색하세요"
+            aria-label="시설 검색"
+          />
+
+          <div role="group" aria-label="시설" class="mt-2">
+            <label class="radio-item">
+              <input
+                type="checkbox"
+                :checked="isContentChecked('전체')"
+                @change="toggleContentAll"
+                class="radio-input"
+                aria-label="전체"
+              />
+              <span class="text-sm truncate">전체</span>
+            </label>
+
+            <label
+              v-for="opt in contentTypeOptions.filter(o => !contentSearchQuery || o.label.includes(contentSearchQuery) || o.id.includes(contentSearchQuery))"
+              :key="opt.id"
+              class="radio-item"
+              :aria-checked="isContentChecked(opt.id)"
+              tabindex="0"
+              @keydown.enter.prevent="toggleContentTypeUI(opt.id)"
+            >
+              <input
+                type="checkbox"
+                :checked="isContentChecked(opt.id)"
+                @change="toggleContentTypeUI(opt.id)"
+                class="radio-input"
+                :aria-label="opt.label"
+              />
+              <span class="text-sm truncate">{{ opt.label }} <small class="muted">({{ opt.count }})</small></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 필터 오버레이: 체크박스 + 검색 -->
     <div class="absolute" style="left:14px; bottom:80px; z-index:800;">
       <div class="relative">
         <button @click="filterOpen = !filterOpen" class="bg-white text-sm px-3 py-1 rounded border">
-          {{ selectedDistrictLabel }}
+          지역
         </button>
 
-        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="구 필터">
+        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="지역">
           <input
             v-model="searchQuery"
             type="search"
             class="filter-search"
-            placeholder="구 이름으로 검색하세요"
-            aria-label="구 검색"
+            placeholder="지역 이름으로 검색하세요"
+            aria-label="지역 검색"
           />
 
-          <div role="group" aria-label="구 선택" class="mt-2">
+          <div role="group" aria-label="지역" class="mt-2">
             <label
               v-for="d in filteredDistricts"
               :key="d"
               class="radio-item"
               :aria-checked="isChecked(d)"
               tabindex="0"
-              @keydown.enter.prevent="toggleDistrict(d)"
+              @keydown.enter.prevent="handleToggleDistrict(d)"
             >
               <input
                 type="checkbox"
                 :checked="isChecked(d)"
-                @change="toggleDistrict(d)"
+                @change="handleToggleDistrict(d)"
                 class="radio-input"
                 :aria-label="d"
               />
@@ -59,6 +109,12 @@
 
       <span v-if="loading">관광지를 불러오는 중</span>
       <span v-else>{{ markerCount }}개의 장소</span>
+    </div>
+
+    <div class="map-autofit-control" style="position:absolute; right:60px; top:14px; z-index:900;">
+      <button type="button" class="btn-sm" @click="toggleAutoFit" :title="autoFitEnabled ? '자동 맞춤 켜짐' : '자동 맞춤 끔'">
+        {{ autoFitEnabled ? '자동 맞춤: 켜짐' : '자동 맞춤: 끔' }}
+      </button>
     </div>
 
     <!-- 장소 인포 패널 -->
@@ -146,6 +202,14 @@
       </svg>
       {{ error }}
     </div>
+
+    <div v-if="routeMessage" class="map-route-msg surface-card" role="status" aria-live="polite">
+      <div class="map-loading-card">
+        <div>
+          <strong>{{ routeMessage }}</strong>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -160,7 +224,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
-import { selectedDistricts, setSelectedDistricts, toggleDistrict } from '../stores/filterStore'
+import { selectedDistricts, setSelectedDistricts, toggleDistrict, selectedContentTypes, setSelectedContentTypes, toggleContentType, clearSelectedContentTypes } from '../stores/filterStore'
 
 const props = defineProps<{ filename?: string; routeMode?: boolean; editingRoute?: boolean }>()
 const emit = defineEmits<{
@@ -174,6 +238,8 @@ const loading = ref(true)
 const error = ref('')
 const allItems = ref<TourItem[]>([])
 const filterOpen = ref(false)
+const contentFilterOpen = ref(false)
+const contentSearchQuery = ref('')
 const searchQuery = ref('')
 const activeItem = ref<TourItem | null>(null)
 
@@ -181,6 +247,20 @@ let map: L.Map | null = null
 let markersLayer: any = null
 let smallMarkersLayer: any = null
 let initialFitDone = false
+let polylineLayer: any = null
+const lastUserInteraction = ref<number>(0)
+const autoFitEnabled = ref(true)
+const programmaticMove = ref(false)
+let programmaticTimer: number | null = null
+
+function beginProgrammaticMove(timeout = 900) {
+  programmaticMove.value = true
+  if (programmaticTimer) window.clearTimeout(programmaticTimer)
+  programmaticTimer = window.setTimeout(() => {
+    programmaticMove.value = false
+    programmaticTimer = null
+  }, timeout)
+}
 
 const router = useRouter()
 
@@ -189,15 +269,58 @@ const DEBOUNCE_MS = 300
 const CLUSTER_MIN_SIZE = 6
 const CLUSTER_RADIUS_PX = 60
 
+// fraction of viewport the route bbox should occupy when auto-fitting (e.g. 0.1 = 10%)
+const FIT_TARGET_FRAC = 0.5
+
 const STORAGE_KEY = 'localhub.mapview'
 
 function saveMapView() {
+  if (!map) return
+  if (programmaticMove.value) return
+  try {
+    const c = map.getCenter()
+    const z = map.getZoom()
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: z, ts: Date.now() }))
+  } catch (e) {}
+}
+
+function persistMapView() {
   if (!map) return
   try {
     const c = map.getCenter()
     const z = map.getZoom()
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: z, ts: Date.now() }))
   } catch (e) {}
+}
+
+function computeDesiredZoomForTarget(bounds: L.LatLngBounds, targetFrac: number) {
+  if (!map) return null
+  try {
+    const size = map.getSize()
+    const vw = size.x
+    const vh = size.y
+    const nePt = map.latLngToContainerPoint(bounds.getNorthEast())
+    const swPt = map.latLngToContainerPoint(bounds.getSouthWest())
+    const bboxPxW = Math.abs(nePt.x - swPt.x)
+    const bboxPxH = Math.abs(nePt.y - swPt.y)
+    const widthRatio = bboxPxW / vw
+    const heightRatio = bboxPxH / vh
+    const useWidth = widthRatio >= heightRatio
+    const viewportPx = useWidth ? vw : vh
+    const bboxPx = useWidth ? bboxPxW : bboxPxH
+    if (!bboxPx || !isFinite(bboxPx) || bboxPx <= 0) return null
+    const desiredPx = Math.max(16, viewportPx * targetFrac)
+    const scaleNeeded = desiredPx / bboxPx
+    if (!isFinite(scaleNeeded) || scaleNeeded <= 0) return null
+    const deltaZoom = Math.log2(scaleNeeded)
+    let desiredZoom = (map.getZoom() || 11) + deltaZoom
+    const maxZoomAllowed = typeof (map as any).getMaxZoom === 'function' ? (map as any).getMaxZoom() : 19
+    const minZoomAllowed = typeof (map as any).getMinZoom === 'function' ? (map as any).getMinZoom() : 0
+    desiredZoom = Math.min(Math.max(desiredZoom, minZoomAllowed), maxZoomAllowed)
+    return desiredZoom
+  } catch (e) {
+    return null
+  }
 }
 
 function goToPlace(id: string | number) {
@@ -271,13 +394,74 @@ const filteredDistricts = computed(() => {
   return districts.value.filter(d => d === '전체' || d.toLowerCase().includes(q))
 })
 
+// 콘텐츠 유형(시설) 매핑 (SCHEMA 기준)
+const CONTENT_TYPE_MAP: Record<string, string> = {
+  '12': '관광지',
+  '14': '문화시설',
+  '15': '축제공연행사',
+  '25': '여행코스',
+  '28': '레포츠',
+  '32': '숙박',
+  '38': '쇼핑',
+  '39': '음식점'
+}
+
+const contentTypeCounts = computed(() => {
+  const m = new Map<string, number>()
+  for (const it of allItems.value) {
+    const id = String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')
+    if (!id) continue
+    m.set(id, (m.get(id) || 0) + 1)
+  }
+  return m
+})
+
+const contentTypeOptions = computed(() => {
+  const ids = Array.from(contentTypeCounts.value.keys()).sort((a, b) => Number(a) - Number(b))
+  return ids.map(id => ({ id, label: CONTENT_TYPE_MAP[id] ?? id, count: contentTypeCounts.value.get(id) || 0 }))
+})
+
+const selectedContentTypeLabel = computed(() => {
+  const sel = selectedContentTypes.value
+  const opts = contentTypeOptions.value
+  if (sel.length === 0) return '선택 없음'
+  if (opts.length && sel.length === opts.length) return '전체'
+  if (sel.length === 1) {
+    const opt = opts.find(o => o.id === sel[0])
+    return opt ? opt.label : sel[0]
+  }
+  return `${sel.length}개 선택`
+})
+
+function isContentChecked(id: string) {
+  if (id === '전체') {
+    const allIds = contentTypeOptions.value.map(o => o.id)
+    return selectedContentTypes.value.length === allIds.length
+  }
+  return selectedContentTypes.value.includes(id)
+}
+
+function toggleContentAll() {
+  const allIds = contentTypeOptions.value.map(o => o.id)
+  if (selectedContentTypes.value.length === allIds.length) setSelectedContentTypes([])
+  else setSelectedContentTypes([...allIds])
+}
+
+function toggleContentTypeUI(id: string) {
+  // use store helper for single toggles
+  toggleContentType(id)
+}
+
 const visibleItems = computed(() => {
   const sel = selectedDistricts.value
   if (!sel.length) return []
+  const selTypes = selectedContentTypes.value
+  if (!selTypes.length) return []
   return allItems.value.filter(it => {
     if (!it) return false
     const g = extractGu(it.addr1) || '기타'
-    return sel.includes(g)
+    const typeId = String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')
+    return sel.includes(g) && selTypes.includes(typeId)
   })
 })
 
@@ -293,7 +477,7 @@ const selectedDistrictLabel = computed(() => {
   return `${sel.length}개 선택`
 })
 
-const markerCount = computed(() => visibleCount.value)
+const markerCount = computed(() => (showOnlyRoute.value ? routeList.value.length : visibleCount.value))
 
 function isChecked(d: string) {
   if (d === '전체') {
@@ -301,6 +485,19 @@ function isChecked(d: string) {
     return selectedDistricts.value.length === all.length
   }
   return selectedDistricts.value.includes(d)
+}
+
+function handleToggleDistrict(d: string) {
+  if (d === '전체') {
+    const all = districts.value.filter(x => x !== '전체')
+    if (selectedDistricts.value.length === all.length) {
+      setSelectedDistricts([])
+    } else {
+      setSelectedDistricts([...all])
+    }
+  } else {
+    toggleDistrict(d)
+  }
 }
 
 function getOverview(it?: TourItem | null) {
@@ -314,8 +511,101 @@ function clearRoute() {
   emit('route-changed', routeList.value.slice())
 }
 
+// Load and show a post's saved route by contentid array. If empty or not found,
+// show a small message overlay. This is intended to be called by the parent
+// (via defineExpose) when a post is opened.
+async function showRouteFromPost(ids: Array<string | number> | null | undefined) {
+  try { sessionStorage.removeItem(STORAGE_KEY) } catch (e) {}
+  showOnlyRoute.value = true
+  routeMessage.value = ''
+  routeList.value = []
+
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    routeMessage.value = '여행 경로가 지정되지 않았습니다.'
+    updateMarkers()
+    return
+  }
+
+  const fetched: Array<any> = []
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i]
+    try {
+      const res = await fetch(`/api/pois/${encodeURIComponent(String(id))}`)
+      if (!res.ok) continue
+      const json = await res.json()
+      const lat = toNumber(json.mapy)
+      const lng = toNumber(json.mapx)
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
+      fetched.push({ contentid: id, title: json.title, lat, lng, order: i + 1 })
+    } catch (e) {
+      // ignore individual failures
+    }
+  }
+
+  if (!fetched.length) {
+    routeMessage.value = '여행 경로가 지정되지 않았습니다.'
+    routeList.value = []
+    try { map?.invalidateSize() } catch (e) {}
+    // small delay to allow map to recalc before trying to render
+    await new Promise((res) => setTimeout(res, 60))
+    try {
+      (map as any)?.dragging?.enable?.()
+      (map as any)?.scrollWheelZoom?.enable?.()
+      (map as any)?.doubleClickZoom?.enable?.()
+      (map as any)?.boxZoom?.enable?.()
+      (map as any)?.keyboard?.enable?.()
+      (map as any)?.tap?.enable?.()
+    } catch (e) {}
+    updateMarkers()
+    return
+  }
+
+  routeList.value = fetched
+  routeMessage.value = ''
+  try { map?.invalidateSize() } catch (e) {}
+  // allow layout to settle so fitBounds works reliably
+  await new Promise((res) => setTimeout(res, 60))
+  try {
+    (map as any)?.dragging?.enable?.()
+    (map as any)?.scrollWheelZoom?.enable?.()
+    (map as any)?.doubleClickZoom?.enable?.()
+    (map as any)?.boxZoom?.enable?.()
+    (map as any)?.keyboard?.enable?.()
+    (map as any)?.tap?.enable?.()
+  } catch (e) {}
+  updateMarkers()
+
+  // after markers/polylines are added, ensure the route bbox occupies at least 50% of viewport
+  await new Promise((res) => setTimeout(res, 180))
+  if (!map) return
+  try {
+    const bounds = L.latLngBounds(routeList.value.map(r => [Number(r.lat), Number(r.lng)]))
+    if (!bounds.isValid()) return
+
+    // measure pixel size of bounds inside the container
+    const ne = map.latLngToContainerPoint(bounds.getNorthEast())
+    const sw = map.latLngToContainerPoint(bounds.getSouthWest())
+    const bboxPxW = Math.abs(ne.x - sw.x)
+    const bboxPxH = Math.abs(ne.y - sw.y)
+    const size = map.getSize()
+    const vw = size.x
+    const vh = size.y
+    const widthRatio = bboxPxW / vw
+    const heightRatio = bboxPxH / vh
+    const maxRatio = Math.max(widthRatio, heightRatio)
+
+    // fitting is handled centrally in updateMarkers() to avoid duplicate/conflicting setView calls
+  } catch (e) {
+    // ignore measurement errors
+  }
+}
+
 // route list 저장 (JSON으로 내보낼 수 있는 형태)
 const routeList = ref<Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>>([])
+// when true, map will show only markers from `routeList` (used when displaying a post's saved route)
+const showOnlyRoute = ref(false)
+// message to show when route is empty or unavailable
+const routeMessage = ref('')
 
 // 동적으로 아이콘 생성: order 있으면 번호 표시, selected이면 색상 토글, hideCenterDot이면 내부 흰 점 제거
 function buildMarkerIcon(order?: number, selected = false, hideSvg = false) {
@@ -371,12 +661,92 @@ function handleRouteMarkerClick(item: TourItem) {
 function clearMarkers() {
   if (markersLayer && markersLayer.clearLayers) markersLayer.clearLayers()
   if (smallMarkersLayer && smallMarkersLayer.clearLayers) smallMarkersLayer.clearLayers()
+  if (polylineLayer) {
+    try { map?.removeLayer(polylineLayer) } catch (e) {}
+    polylineLayer = null
+  }
 }
 
 function updateMarkers() {
   if (!map || !markersLayer) return
   clearMarkers()
   const bounds = L.latLngBounds([])
+
+  // If parent requested showing only a post's saved route, render only those markers
+  if (showOnlyRoute.value) {
+    if (!routeList.value.length) {
+      // nothing to render; routeMessage will inform the user
+      return
+    }
+
+    for (const r of routeList.value) {
+      const lat = toNumber(r.lat)
+      const lng = toNumber(r.lng)
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
+
+      const icon = buildMarkerIcon(r.order, true, true)
+      const marker = L.marker([lat, lng], { icon, keyboard: true, title: r.title || '장소' })
+
+      marker.bindTooltip(
+        `<div class="localhub-tooltip-title">${escapeHtml(r.title || '장소')}</div>`,
+        { direction: 'top', offset: [0, -9], opacity: 1 },
+      )
+
+      marker.on('click', () => {
+        activeItem.value = null
+        if (map) {
+          try { beginProgrammaticMove(); map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true }); map.once('moveend', () => persistMapView()); setTimeout(() => persistMapView(), 800) } catch (e) {}
+        }
+      })
+
+      smallMarkersLayer.addLayer(marker)
+      bounds.extend([lat, lng])
+    }
+
+      // draw polyline connecting route points (in order)
+      try {
+        const latlngs = routeList.value
+          .map(r => [Number(r.lat), Number(r.lng)])
+          .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b))
+        if (latlngs.length > 1) {
+          polylineLayer = L.polyline(latlngs, { color: '#6f49c8', weight: 4, opacity: 0.95, lineCap: 'round' })
+          polylineLayer.addTo(map)
+        }
+      } catch (e) {}
+
+    if (bounds.isValid()) {
+        const now = Date.now()
+        // avoid overriding recent user interactions and respect manual auto-fit toggle
+        if (autoFitEnabled.value && now - lastUserInteraction.value > 500) {
+            try {
+            console.debug('MapView: updateMarkers route-only fitBounds', { autoFitEnabled: autoFitEnabled.value, lastUserInteraction: lastUserInteraction.value })
+            beginProgrammaticMove()
+            const padBounds = bounds.pad(0.08)
+            const targetFrac = FIT_TARGET_FRAC
+            // compute desired zoom from pixel sizes (more robust than zoomToFit inversion)
+            const desiredZoom = computeDesiredZoomForTarget(padBounds, targetFrac)
+            const center = padBounds.getCenter()
+            if (desiredZoom == null) {
+              // fallback: use zoomToFit adjusted by targetFrac (correct sign)
+              const zoomToFit = (map as any).getBoundsZoom ? (map as any).getBoundsZoom(padBounds, false) : (map.getZoom() || 11)
+              const maxZoomAllowed = typeof (map as any).getMaxZoom === 'function' ? (map as any).getMaxZoom() : 19
+              const fallbackZoom = Math.min(zoomToFit + Math.log2(targetFrac), maxZoomAllowed)
+              console.debug('MapView: route-only fallback fit', { zoomToFit, fallbackZoom, targetFrac, padBounds, mapSize: map.getSize(), center })
+              map.setView(center, fallbackZoom, { animate: true })
+            } else {
+              console.debug('MapView: route-only fit', { desiredZoom, targetFrac, padBounds, mapSize: map.getSize(), center })
+              map.setView(center, desiredZoom, { animate: true })
+            }
+            map.once('moveend', () => persistMapView())
+            setTimeout(() => persistMapView(), 800)
+          } catch (e) { console.debug('MapView: fitBounds failed', e) }
+        } else {
+          console.debug('MapView: skipping fitBounds (autoFitEnabled, lastUserInteraction)', { autoFitEnabled: autoFitEnabled.value, lastUserInteraction: lastUserInteraction.value })
+        }
+    }
+
+    return
+  }
 
   const entries: Array<{ item: TourItem; lat: number; lng: number; marker: L.Marker; point?: L.Point; isSelected?: boolean }> = []
   for (const item of visibleItems.value) {
@@ -403,16 +773,12 @@ function updateMarkers() {
         // Also open the same info panel as normal clicks
         activeItem.value = item
         if (map) {
-          try {
-            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
-          } catch (e) { /* ignore */ }
+          try { beginProgrammaticMove(); map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true }); map.once('moveend', () => persistMapView()); setTimeout(() => persistMapView(), 800) } catch (e) { /* ignore */ }
         }
       } else {
         activeItem.value = item
         if (map) {
-          try {
-            map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true })
-          } catch (e) { /* ignore */ }
+          try { beginProgrammaticMove(); map.setView([lat, lng], Math.max(map.getZoom(), 13), { animate: true }); map.once('moveend', () => persistMapView()) } catch (e) { /* ignore */ }
         }
       }
     })
@@ -472,16 +838,40 @@ function updateMarkers() {
     if (entries[i].isSelected) smallMarkersLayer.addLayer(entries[i].marker)
   }
 
-  if (bounds.isValid()) {
-    if (!initialFitDone) {
-      map.fitBounds(bounds.pad(0.08), { maxZoom: 13 })
-      initialFitDone = true
+    if (bounds.isValid()) {
+      if (!initialFitDone) {
+        const now = Date.now()
+        if (autoFitEnabled.value && now - lastUserInteraction.value > 500) {
+          try {
+            console.debug('MapView: initial fitBounds', { autoFitEnabled: autoFitEnabled.value, lastUserInteraction: lastUserInteraction.value })
+            beginProgrammaticMove()
+            const padBounds = bounds.pad(0.08)
+            const targetFrac = FIT_TARGET_FRAC
+            const desiredZoom = computeDesiredZoomForTarget(padBounds, targetFrac)
+            const center = padBounds.getCenter()
+            if (desiredZoom == null) {
+              const zoomToFit = (map as any).getBoundsZoom ? (map as any).getBoundsZoom(padBounds, false) : (map.getZoom() || 11)
+              const maxZoomAllowed = typeof (map as any).getMaxZoom === 'function' ? (map as any).getMaxZoom() : 19
+              const fallbackZoom = Math.min(zoomToFit + Math.log2(targetFrac), maxZoomAllowed)
+              console.debug('MapView: initial fallback fit', { zoomToFit, fallbackZoom, targetFrac, padBounds, mapSize: map.getSize(), center })
+              map.setView(center, fallbackZoom)
+            } else {
+              console.debug('MapView: initial fit', { desiredZoom, targetFrac, padBounds, mapSize: map.getSize(), center })
+              map.setView(center, desiredZoom)
+            }
+            map.once('moveend', () => persistMapView())
+            setTimeout(() => persistMapView(), 800)
+          } catch (e) { console.debug('MapView: initial fitBounds failed', e) }
+        } else {
+          console.debug('MapView: skipping initial fitBounds', { autoFitEnabled: autoFitEnabled.value, lastUserInteraction: lastUserInteraction.value })
+        }
+        initialFitDone = true
+      }
     }
-  }
 }
 
 // watch: 마커/데이터/모드 변경 시 다시 그리기
-watch([selectedDistricts, allItems, () => props.routeMode], () => {
+watch([selectedDistricts, selectedContentTypes, allItems, () => props.routeMode], () => {
   updateMarkers()
 })
 
@@ -526,14 +916,30 @@ defineExpose({
   },
   clearRoute() {
     routeList.value = []
+    showOnlyRoute.value = false
+    routeMessage.value = ''
     try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
     updateMarkers()
     emit('route-changed', routeList.value.slice())
   },
+  showRouteFromPost(ids) {
+    return showRouteFromPost(ids)
+  },
+  enableAutoFit() {
+    try {
+      autoFitEnabled.value = true
+      lastUserInteraction.value = 0
+      initialFitDone = false
+      try { map?.invalidateSize() } catch (e) {}
+      setTimeout(() => updateMarkers(), 80)
+    } catch (e) {}
+  },
   resetCamera() {
     if (!map) return
     try {
+      beginProgrammaticMove()
       map.setView([37.5665, 126.978], 11, { animate: true })
+      map.once('moveend', () => persistMapView())
     } catch (e) {}
     // remove stored camera so future mounts start from default
     try { sessionStorage.removeItem(STORAGE_KEY) } catch (e) {}
@@ -545,12 +951,20 @@ defineExpose({
 onMounted(async () => {
   if (!mapEl.value) return
 
-  map = L.map(mapEl.value, { preferCanvas: true, zoomControl: false, attributionControl: true }).setView([37.5665, 126.978], 11)
+  map = L.map(mapEl.value, {
+    preferCanvas: true,
+    zoomControl: false,
+    attributionControl: true,
+    // allow fractional (non-integer) zoom levels so computed desiredZoom can be fractional
+    zoomSnap: 0,
+    zoomDelta: 0.25,
+  }).setView([37.5665, 126.978], 11)
   const saved = sessionStorage.getItem(STORAGE_KEY)
   if (saved) {
     try {
       const s = JSON.parse(saved)
       if (s && Number.isFinite(s.lat) && Number.isFinite(s.lng) && Number.isFinite(s.zoom)) {
+        beginProgrammaticMove()
         map.setView([s.lat, s.lng], s.zoom)
         initialFitDone = true
       }
@@ -574,6 +988,11 @@ onMounted(async () => {
   map.on('moveend', saveMapView)
   map.on('zoomend', saveMapView)
   map.on('click', () => { activeItem.value = null })
+  // track user interactions to avoid programmatic fitBounds immediately after user moves
+  map.on('movestart', () => { lastUserInteraction.value = Date.now(); autoFitEnabled.value = false })
+  map.on('zoomstart', () => { lastUserInteraction.value = Date.now(); autoFitEnabled.value = false })
+  map.on('dragstart', () => { lastUserInteraction.value = Date.now(); autoFitEnabled.value = false })
+  map.on('touchstart', () => { lastUserInteraction.value = Date.now(); autoFitEnabled.value = false })
 
   try {
     const bounds = map.getBounds()
@@ -582,6 +1001,11 @@ onMounted(async () => {
     if (!selectedDistricts.value.length) {
       const all = districts.value.filter(d => d !== '전체')
       setSelectedDistricts([...all])
+    }
+
+    if (!selectedContentTypes.value.length) {
+      const allTypes = Array.from(new Set(allItems.value.map(it => String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')))).filter(Boolean).sort((a, b) => Number(a) - Number(b))
+      setSelectedContentTypes(allTypes)
     }
 
     updateMarkers()
@@ -599,15 +1023,32 @@ onBeforeUnmount(() => {
   saveMapView()
   map?.remove()
   map = null
+  lastUserInteraction.value = 0
 })
 
 function onMapMove() {
   if (!map) return
+  // when showing a post's saved route, avoid fetching and re-fitting markers
+  if (showOnlyRoute.value) return
+
   if (fetchTimer) clearTimeout(fetchTimer)
   fetchTimer = window.setTimeout(() => {
     if (!map) return
     void fetchPoisForBounds(map.getBounds())
   }, DEBOUNCE_MS)
+}
+
+function toggleAutoFit() {
+  autoFitEnabled.value = !autoFitEnabled.value
+  console.debug('MapView: toggleAutoFit ->', autoFitEnabled.value)
+  if (autoFitEnabled.value) {
+    // re-enable automatic fitting: reset interaction timer and trigger re-layout+fit
+    lastUserInteraction.value = 0
+    initialFitDone = false
+    try { map?.invalidateSize() } catch (e) {}
+    // small delay then update markers to cause fitBounds
+    setTimeout(() => updateMarkers(), 80)
+  }
 }
 </script>
 
@@ -706,6 +1147,16 @@ function onMapMove() {
   bottom: 14px;
   max-width: calc(100% - 28px);
   box-shadow: 0 12px 32px rgba(83, 29, 36, 0.12);
+}
+
+.map-route-msg {
+  position: absolute;
+  z-index: 700;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  max-width: min(640px, calc(100% - 56px));
+  box-shadow: 0 12px 32px rgba(83, 29, 36, 0.06);
 }
 
 /* Filter panel styles */

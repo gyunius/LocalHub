@@ -13,9 +13,13 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, text
 
-from .models import Base, POI, Post, Comment
-from . import migrate as migrator
-from .logging_config import configure_logging
+try:
+    from .models import Base, POI, Post, Comment
+    from . import migrate as migrator
+except ImportError:
+    from models import Base, POI, Post, Comment
+    import migrate as migrator
+
 import logging
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -206,6 +210,8 @@ async def list_posts(page: int | None = None, limit: int = 20, offset: int = 0):
                 "author": p.author,
                 "title": p.title,
                 "route": json.loads(p.route) if p.route else [],
+                # include a short preview of the body so frontend list can show summaries
+                "body": (p.body[:300] if p.body else ""),
                 "views": getattr(p, 'views', 0),
                 "created_at": p.created_at.isoformat() if p.created_at else None
             })
