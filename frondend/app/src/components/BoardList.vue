@@ -152,6 +152,8 @@ const props = defineProps<{
   pageSize?: number
 }>()
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+
 const emit = defineEmits<{
   (e: 'open-post', id: string): void
 }>()
@@ -205,7 +207,14 @@ async function loadAll() {
 
   try {
     let data: any = null
-    if (typeof filename === 'string' && filename.startsWith('/api')) {
+    const isApiUrl = typeof filename === 'string' && (
+      filename.startsWith('/api') ||
+      filename.startsWith('http://') ||
+      filename.startsWith('https://') ||
+      filename.startsWith(API_BASE)
+    )
+
+    if (isApiUrl) {
       const res = await fetch(filename)
       if (!res.ok) throw new Error('Failed to load posts from API')
       const json = await res.json()

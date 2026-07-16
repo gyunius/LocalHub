@@ -104,7 +104,7 @@
         </div>
 
         <div v-else>
-          <BoardList :key="boardKey" filename="/api/posts?limit=20" :page-size="3" @open-post="onOpenPost" />
+          <BoardList :key="boardKey" :filename="boardFilename" :page-size="3" @open-post="onOpenPost" />
         </div>
       </aside>
 
@@ -161,6 +161,8 @@ const editingPostId = ref<string | undefined>(undefined)
 
 // BoardList를 강제 리로드할 때 변경하는 키
 const boardKey = ref<number>(0)
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+const boardFilename = `${API_BASE}/posts?limit=20`
 
 // ref to MapView component to call exportSelection()
 const mapViewRef = ref<any>(null)

@@ -21,6 +21,10 @@ except ImportError:
     import migrate as migrator
 
 import logging
+try:
+    from .logging_config import configure_logging
+except Exception:
+    from logging_config import configure_logging
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 DB_PATH = os.getenv("DB_PATH") or str(Path(__file__).parent / "data" / "localhub.db")

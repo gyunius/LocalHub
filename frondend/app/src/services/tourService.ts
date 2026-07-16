@@ -26,9 +26,9 @@ export async function fetchTourData(filename: string): Promise<TourApiResponse> 
 
   let json: TourApiResponse;
 
-  // API 우선: /api/pois에서 가능한 경우 데이터를 가져옵니다.
+  // API 우선: VITE_API_BASE를 사용하여 /pois 엔드포인트에서 가능한 경우 데이터를 가져옵니다.
   try {
-    const apiRes = await fetch(`/api/pois?limit=10000`);
+    const apiRes = await fetch(`${API_BASE}/pois?limit=10000`);
     if (apiRes.ok) {
       const apiJson = await apiRes.json();
       const items = (apiJson.items || []).map((it: any) => ({

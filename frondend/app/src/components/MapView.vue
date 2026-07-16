@@ -232,6 +232,7 @@ const emit = defineEmits<{
 }>()
 
 const filename = props.filename ?? '서울_관광지.json'
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 const mapEl = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
@@ -341,7 +342,7 @@ async function fetchPoisForBounds(bounds: L.LatLngBounds) {
   const bbox = [minLng, minLat, maxLng, maxLat].map((v) => v.toFixed(6)).join(',')
 
   try {
-    const res = await fetch(`/api/pois?bbox=${encodeURIComponent(bbox)}&limit=10000`)
+    const res = await fetch(`${API_BASE}/pois?bbox=${encodeURIComponent(bbox)}&limit=10000`)
     if (res.ok) {
       const json = await res.json()
       const items = json.items || []
@@ -530,7 +531,7 @@ async function showRouteFromPost(ids: Array<string | number> | null | undefined)
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i]
     try {
-      const res = await fetch(`/api/pois/${encodeURIComponent(String(id))}`)
+      const res = await fetch(`${API_BASE}/pois/${encodeURIComponent(String(id))}`)
       if (!res.ok) continue
       const json = await res.json()
       const lat = toNumber(json.mapy)
