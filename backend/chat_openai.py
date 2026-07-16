@@ -103,28 +103,38 @@ async def chat_openai(req: ChatRequest, request: Request):
 
     sources_text = "\n".join([f"- {s['title']} ({s['contentid']}): {s.get('addr1') or ''}" for s in sources]) if sources else "(no sources)"
 
-    # If search is requested but no local sources found, do NOT call the model to avoid hallucination.
-    if req.use_search and not sources:
-        return {
-            "id": resp_id,
-            "reply": "로컬 데이터에서 요청하신 항목을 찾을 수 없습니다. 사용된 출처: 없음",
-            "sources": [],
-            "session_id": session_id,
-            "model_meta": {"local_only": True}
-        }
+    # If search requested but no local sources found, allow model call
+    # but instruct model to clearly mark any external/estimated info as [추정]
+    no_local_sources = req.use_search and not sources
 
-    system_prompt = (
-        "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고,"
-        " 오직 제공된 로컬 출처만 사용하여 근거 있는 답변만 하세요. 절대 외부의 지식(인터넷, 개인경험, 일반상식 등)이나 추측을 사용하지 마세요."
-        " 출처가 없으면 '사용된 출처: 없음'이라고 명확히 적으세요."
-        " 답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
-    )
-    user_prompt = (
-        f"질문: {req.message}\n\n"
-        f"출처 목록:\n{sources_text}\n\n"
-        "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요."
-        " 출처를 사용했으면 본문 끝에 사용된 출처의 contentid를 대괄호로 나열하세요. 출처가 없다면 '사용된 출처: 없음'을 쓰세요."
-    )
+    # Build prompts; when no local sources exist, allow safe estimated suggestions.
+    if no_local_sources:
+        system_prompt = (
+            "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하세요. "
+            "로컬 출처가 제공되지 않을 때는, 모델이 합리적으로 '추정'하는 정보를 제공할 수 있습니다. "
+            "모든 외부 추정 정보 또는 불확실한 내용은 반드시 '[추정]'으로 표기하세요. "
+            "로컬 출처를 사용한 경우에는 출처(contentid)를 명시하세요. "
+            "로컬 출처가 없을 때는 불확실성을 명시한 안전한 제안(추천 검색어 2~3개, 대체 장소 유형, 방문 팁 한 줄)을 반드시 포함하세요. "
+            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 또는 '사용된 출처: 없음'을 표기하세요."
+        )
+        user_prompt = (
+            f"질문: {req.message}\n\n"
+            f"출처 목록:\n{sources_text}\n\n"
+            "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
+            "출처가 없을 경우, 외부 추정 정보는 '[추정]'으로 표기하고, 추천 검색어(2~3개), 대체 장소 유형, 방문 팁(한 줄)을 반드시 제공하세요."
+        )
+    else:
+        system_prompt = (
+            "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고, "
+            "오직 제공된 로컬 출처만 사용하여 근거 있는 답변만 하세요. 외부의 지식이나 추측은 사용하지 마세요. "
+            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
+        )
+        user_prompt = (
+            f"질문: {req.message}\n\n"
+            f"출처 목록:\n{sources_text}\n\n"
+            "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
+            "출처를 사용했으면 본문 끝에 사용된 출처의 contentid를 대괄호로 나열하세요. 출처가 없다면 '사용된 출처: 없음'을 쓰세요."
+        )
     messages = [{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}]
 
     openai_resp_text = ""
