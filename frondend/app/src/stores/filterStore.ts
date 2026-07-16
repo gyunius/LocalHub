@@ -16,3 +16,20 @@ export function toggleDistrict(d: string) {
 export function clearSelectedDistricts() {
   selectedDistricts.value = []
 }
+
+// 선택된 시설(콘텐츠 유형) 필터
+export const selectedContentTypes = ref<string[]>([])
+
+export function setSelectedContentTypes(v: string[]) {
+  selectedContentTypes.value = v
+}
+
+export function toggleContentType(id: string) {
+  const idx = selectedContentTypes.value.indexOf(id)
+  if (idx >= 0) selectedContentTypes.value.splice(idx, 1)
+  else selectedContentTypes.value.push(id)
+}
+
+export function clearSelectedContentTypes() {
+  selectedContentTypes.value = []
+}

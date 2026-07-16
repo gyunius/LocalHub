@@ -6,35 +6,85 @@
       aria-label="서울 관광지 지도"
     ></div>
 
+    <!-- 필터 오버레이: 시설(새 필터) -->
+    <div class="absolute" style="left:14px; bottom:160px; z-index:800;">
+      <div class="relative">
+        <button @click="contentFilterOpen = !contentFilterOpen" class="bg-white text-sm px-3 py-1 rounded border">
+          시설
+        </button>
+
+        <div v-if="contentFilterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="시설">
+          <input
+            v-model="contentSearchQuery"
+            type="search"
+            class="filter-search"
+            placeholder="시설명으로 검색하세요"
+            aria-label="시설 검색"
+          />
+
+          <div role="group" aria-label="시설" class="mt-2">
+            <label class="radio-item">
+              <input
+                type="checkbox"
+                :checked="isContentChecked('전체')"
+                @change="toggleContentAll"
+                class="radio-input"
+                aria-label="전체"
+              />
+              <span class="text-sm truncate">전체</span>
+            </label>
+
+            <label
+              v-for="opt in contentTypeOptions.filter(o => !contentSearchQuery || o.label.includes(contentSearchQuery) || o.id.includes(contentSearchQuery))"
+              :key="opt.id"
+              class="radio-item"
+              :aria-checked="isContentChecked(opt.id)"
+              tabindex="0"
+              @keydown.enter.prevent="toggleContentTypeUI(opt.id)"
+            >
+              <input
+                type="checkbox"
+                :checked="isContentChecked(opt.id)"
+                @change="toggleContentTypeUI(opt.id)"
+                class="radio-input"
+                :aria-label="opt.label"
+              />
+              <span class="text-sm truncate">{{ opt.label }} <small class="muted">({{ opt.count }})</small></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 필터 오버레이: 체크박스 + 검색 -->
     <div class="absolute" style="left:14px; bottom:80px; z-index:800;">
       <div class="relative">
         <button @click="filterOpen = !filterOpen" class="bg-white text-sm px-3 py-1 rounded border">
-          {{ selectedDistrictLabel }}
+          지역
         </button>
 
-        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="구 필터">
+        <div v-if="filterOpen" class="absolute left-0 bottom-12 bg-white border rounded p-3 max-h-64 overflow-auto w-72 filter-panel" role="dialog" aria-label="지역">
           <input
             v-model="searchQuery"
             type="search"
             class="filter-search"
-            placeholder="구 이름으로 검색하세요"
-            aria-label="구 검색"
+            placeholder="지역 이름으로 검색하세요"
+            aria-label="지역 검색"
           />
 
-          <div role="group" aria-label="구 선택" class="mt-2">
+          <div role="group" aria-label="지역" class="mt-2">
             <label
               v-for="d in filteredDistricts"
               :key="d"
               class="radio-item"
               :aria-checked="isChecked(d)"
               tabindex="0"
-              @keydown.enter.prevent="toggleDistrict(d)"
+              @keydown.enter.prevent="handleToggleDistrict(d)"
             >
               <input
                 type="checkbox"
                 :checked="isChecked(d)"
-                @change="toggleDistrict(d)"
+                @change="handleToggleDistrict(d)"
                 class="radio-input"
                 :aria-label="d"
               />
@@ -61,7 +111,7 @@
       <span v-else>{{ markerCount }}개의 장소</span>
     </div>
 
-    <div class="map-autofit-control" style="position:absolute; right:14px; top:14px; z-index:900;">
+    <div class="map-autofit-control" style="position:absolute; right:60px; top:14px; z-index:900;">
       <button type="button" class="btn-sm" @click="toggleAutoFit" :title="autoFitEnabled ? '자동 맞춤 켜짐' : '자동 맞춤 끔'">
         {{ autoFitEnabled ? '자동 맞춤: 켜짐' : '자동 맞춤: 끔' }}
       </button>
@@ -174,7 +224,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
 import { getAllItems } from '../services/tourService'
 import type { TourItem } from '../types/tour'
-import { selectedDistricts, setSelectedDistricts, toggleDistrict } from '../stores/filterStore'
+import { selectedDistricts, setSelectedDistricts, toggleDistrict, selectedContentTypes, setSelectedContentTypes, toggleContentType, clearSelectedContentTypes } from '../stores/filterStore'
 
 const props = defineProps<{ filename?: string; routeMode?: boolean; editingRoute?: boolean }>()
 const emit = defineEmits<{
@@ -188,6 +238,8 @@ const loading = ref(true)
 const error = ref('')
 const allItems = ref<TourItem[]>([])
 const filterOpen = ref(false)
+const contentFilterOpen = ref(false)
+const contentSearchQuery = ref('')
 const searchQuery = ref('')
 const activeItem = ref<TourItem | null>(null)
 
@@ -342,13 +394,74 @@ const filteredDistricts = computed(() => {
   return districts.value.filter(d => d === '전체' || d.toLowerCase().includes(q))
 })
 
+// 콘텐츠 유형(시설) 매핑 (SCHEMA 기준)
+const CONTENT_TYPE_MAP: Record<string, string> = {
+  '12': '관광지',
+  '14': '문화시설',
+  '15': '축제공연행사',
+  '25': '여행코스',
+  '28': '레포츠',
+  '32': '숙박',
+  '38': '쇼핑',
+  '39': '음식점'
+}
+
+const contentTypeCounts = computed(() => {
+  const m = new Map<string, number>()
+  for (const it of allItems.value) {
+    const id = String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')
+    if (!id) continue
+    m.set(id, (m.get(id) || 0) + 1)
+  }
+  return m
+})
+
+const contentTypeOptions = computed(() => {
+  const ids = Array.from(contentTypeCounts.value.keys()).sort((a, b) => Number(a) - Number(b))
+  return ids.map(id => ({ id, label: CONTENT_TYPE_MAP[id] ?? id, count: contentTypeCounts.value.get(id) || 0 }))
+})
+
+const selectedContentTypeLabel = computed(() => {
+  const sel = selectedContentTypes.value
+  const opts = contentTypeOptions.value
+  if (sel.length === 0) return '선택 없음'
+  if (opts.length && sel.length === opts.length) return '전체'
+  if (sel.length === 1) {
+    const opt = opts.find(o => o.id === sel[0])
+    return opt ? opt.label : sel[0]
+  }
+  return `${sel.length}개 선택`
+})
+
+function isContentChecked(id: string) {
+  if (id === '전체') {
+    const allIds = contentTypeOptions.value.map(o => o.id)
+    return selectedContentTypes.value.length === allIds.length
+  }
+  return selectedContentTypes.value.includes(id)
+}
+
+function toggleContentAll() {
+  const allIds = contentTypeOptions.value.map(o => o.id)
+  if (selectedContentTypes.value.length === allIds.length) setSelectedContentTypes([])
+  else setSelectedContentTypes([...allIds])
+}
+
+function toggleContentTypeUI(id: string) {
+  // use store helper for single toggles
+  toggleContentType(id)
+}
+
 const visibleItems = computed(() => {
   const sel = selectedDistricts.value
   if (!sel.length) return []
+  const selTypes = selectedContentTypes.value
+  if (!selTypes.length) return []
   return allItems.value.filter(it => {
     if (!it) return false
     const g = extractGu(it.addr1) || '기타'
-    return sel.includes(g)
+    const typeId = String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')
+    return sel.includes(g) && selTypes.includes(typeId)
   })
 })
 
@@ -372,6 +485,19 @@ function isChecked(d: string) {
     return selectedDistricts.value.length === all.length
   }
   return selectedDistricts.value.includes(d)
+}
+
+function handleToggleDistrict(d: string) {
+  if (d === '전체') {
+    const all = districts.value.filter(x => x !== '전체')
+    if (selectedDistricts.value.length === all.length) {
+      setSelectedDistricts([])
+    } else {
+      setSelectedDistricts([...all])
+    }
+  } else {
+    toggleDistrict(d)
+  }
 }
 
 function getOverview(it?: TourItem | null) {
@@ -745,7 +871,7 @@ function updateMarkers() {
 }
 
 // watch: 마커/데이터/모드 변경 시 다시 그리기
-watch([selectedDistricts, allItems, () => props.routeMode], () => {
+watch([selectedDistricts, selectedContentTypes, allItems, () => props.routeMode], () => {
   updateMarkers()
 })
 
@@ -875,6 +1001,11 @@ onMounted(async () => {
     if (!selectedDistricts.value.length) {
       const all = districts.value.filter(d => d !== '전체')
       setSelectedDistricts([...all])
+    }
+
+    if (!selectedContentTypes.value.length) {
+      const allTypes = Array.from(new Set(allItems.value.map(it => String((it as any).contenttypeid ?? (it as any).contentTypeId ?? '')))).filter(Boolean).sort((a, b) => Number(a) - Number(b))
+      setSelectedContentTypes(allTypes)
     }
 
     updateMarkers()
