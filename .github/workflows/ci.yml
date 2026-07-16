@@ -24,18 +24,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pytest pytest-asyncio
+          python -m pip install -r backend/requirements.txt
+          python -m pip install pytest pytest-asyncio
 
       - name: Run backend tests (debug)
         env:
           SKIP_MIGRATE: '1'
         run: |
           set -eux
-          cd backend
+          # Ensure we're at the repository root so pytest finds tests and pytest.ini
+          cd $GITHUB_WORKSPACE
           echo "PWD: $(pwd)"
-          echo "Listing backend files:"; ls -la
+          echo "Listing repo files:"; ls -la
           echo "Python version:"; python -V
           echo "Pip list:"; python -m pip list
-          echo "Running pytest (verbose)"
-          pytest -q -vv
+          echo "Running pytest for repo tests (verbose)"
+          python -m pytest tests -vv
