@@ -28,8 +28,6 @@ jobs:
           python -m pip install pytest pytest-asyncio
 
       - name: Run backend tests (debug)
-        env:
-          SKIP_MIGRATE: '1'
         run: |
           set -eux
           # Ensure we're at the repository root so pytest finds tests and pytest.ini
@@ -38,5 +36,6 @@ jobs:
           echo "Listing repo files:"; ls -la
           echo "Python version:"; python -V
           echo "Pip list:"; python -m pip list
+          echo "Running migrations (sample load)"; python -m backend.migrate --sample 2
           echo "Running pytest for repo tests (verbose)"
           python -m pytest tests -vv
