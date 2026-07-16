@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 import os, asyncio, time
 from collections import deque
+import re
 
 try:
     import openai
@@ -65,6 +66,11 @@ class ChatResponse(BaseModel):
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-5-mini"
+# Tunable limits (can be overridden via environment variables)
+OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS") or 4096)
+OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT") or 60)
+PARSER_MAX_OUTPUT_TOKENS = int(os.getenv("PARSER_MAX_OUTPUT_TOKENS") or 512)
+PARSER_TIMEOUT = float(os.getenv("PARSER_TIMEOUT") or 3.0)
 if OPENAI_API_KEY and openai:
     openai.api_key = OPENAI_API_KEY
 
@@ -77,27 +83,149 @@ async def chat_openai(req: ChatRequest, request: Request):
     resp_id = str(uuid4())
     session_id = req.session_id or resp_id
     sources = []
+    extracted_keywords = None
+    extracted_keywords_text = None
     if req.use_search:
         q = req.message
         top_k = min(max(1, int(req.top_k or 5)), 50)
-        async with AsyncSessionLocal() as session:
+        # Parser: extract addr fragment and keywords (minimal JSON-only response)
+        parser_model = os.getenv("PARSER_MODEL") or "gpt-4o-mini"
+        parser_timeout = float(os.getenv("PARSER_TIMEOUT") or PARSER_TIMEOUT)
+        parser_raw = None
+        parser_json = None
+        extracted_keywords = None
+        extracted_keywords_text = None
+        addr_fragment = None
+        # Try LLM parser first (uses kw_system_prompt.txt when available); fallback to heuristics
+        parser_raw = None
+        parser_json = None
+        if OPENAI_API_KEY and OpenAI is not None:
             try:
-                sql = text("SELECT contentid FROM poi_fts WHERE poi_fts MATCH :q LIMIT :lim")
-                res = await session.execute(sql.bindparams(q=q, lim=top_k))
-                contentids = [row[0] for row in res.fetchall()]
+                prompt_path = os.path.join(os.path.dirname(__file__), "kw_system_prompt.txt")
+                try:
+                    with open(prompt_path, "r", encoding="utf-8") as pf:
+                        parser_system = pf.read()
+                except Exception:
+                    parser_system = (
+                        "당신은 입력 문장에서 주소(주소 일부)와 핵심 검색어를 추출하는 파서입니다.\n"
+                        "반드시 JSON으로만 응답하세요. 형식: {\"addr\": \"주소 일부 또는 null\", \"search_keywords\": [\"키워드1\"]}\n"
+                        "다른 설명은 포함하지 마세요."
+                    )
+                parser_user = f"질문: {q}\n\n응답은 반드시 JSON만 반환하세요."
+
+                def sync_parser_call():
+                    client2 = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+                    is_modern = 'gpt-5' in parser_model or 'gpt-4o' in parser_model
+                    if is_modern and hasattr(client2, 'responses'):
+                        return client2.responses.create(model=parser_model, input=[{"role":"system","content":parser_system},{"role":"user","content":parser_user}], max_output_tokens=PARSER_MAX_OUTPUT_TOKENS)
+                    token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
+                    kwargs = {token_param: PARSER_MAX_OUTPUT_TOKENS}
+                    if not is_modern:
+                        kwargs['temperature'] = 0.0
+                    return client2.chat.completions.create(model=parser_model, messages=[{"role":"system","content":parser_system},{"role":"user","content":parser_user}], **kwargs)
+
+                try:
+                    resp = await asyncio.wait_for(asyncio.to_thread(sync_parser_call), timeout=parser_timeout)
+                except Exception:
+                    resp = None
+
+                if resp is not None:
+                    out_text = getattr(resp, 'output_text', None) or (resp.get('output_text') if isinstance(resp, dict) else None)
+                    if not out_text:
+                        ch = getattr(resp, 'choices', None) or (resp.get('choices') if isinstance(resp, dict) else None)
+                        if ch:
+                            first = ch[0]
+                            msg = getattr(first, 'message', None) or (first.get('message') if isinstance(first, dict) else None)
+                            if msg:
+                                out_text = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else None)
+                            else:
+                                out_text = getattr(first, 'text', None) or (first.get('text') if isinstance(first, dict) else None)
+                    parser_raw = str(out_text).strip() if out_text else None
+                    if parser_raw:
+                        b = parser_raw.find('{')
+                        e = parser_raw.rfind('}')
+                        js = parser_raw[b:e+1] if b != -1 and e != -1 and e > b else parser_raw
+                        try:
+                            parser_json = json.loads(js)
+                        except Exception:
+                            parser_json = None
+            except Exception:
+                parser_raw = None
+                parser_json = None
+
+        # Heuristic parsing: detect a Seoul gu in the query and extract core Korean tokens as keywords
+        seoul_gu = [
+            '종로구','중구','용산구','성동구','광진구','동대문구','중랑구','성북구','강북구','도봉구',
+            '노원구','은평구','서대문구','마포구','양천구','강서구','구로구','금천구','영등포구','동작구',
+            '관악구','서초구','강남구','송파구','강동구'
+        ]
+        addr_fragment = None
+        for g in seoul_gu:
+            if g in q:
+                addr_fragment = g
+                break
+
+        extracted_keywords = re.findall(r'[가-힣]{2,}', q)
+        if addr_fragment and addr_fragment in extracted_keywords:
+            extracted_keywords = [t for t in extracted_keywords if t != addr_fragment]
+        # basic stopwords cleanup
+        stopwords = set(['추천', '해주세요', '해줘', '제외', '추천해줘', '주세요'])
+        extracted_keywords = [t for t in extracted_keywords if t not in stopwords][:3]
+        extracted_keywords_text = None
+
+        # Run simple LIKE-based SQL search using addr first, then keywords; rank by keyword overlap
+        async with AsyncSessionLocal() as session:
+            sources = []
+            try:
+                contentids = []
+                if addr_fragment:
+                    pattern = f"%{addr_fragment}%"
+                    sql = text("SELECT contentid FROM poi WHERE addr1 LIKE :p LIMIT :lim")
+                    res = await session.execute(sql.bindparams(p=pattern, lim=top_k))
+                    contentids = [row[0] for row in res.fetchall()]
+
+                if not contentids:
+                    found = []
+                    for kw in extracted_keywords:
+                        if not kw:
+                            continue
+                        pattern = f"%{kw}%"
+                        like_sql = text("SELECT contentid FROM poi WHERE title LIKE :p OR addr1 LIKE :p OR raw_json LIKE :p LIMIT :lim")
+                        r2 = await session.execute(like_sql.bindparams(p=pattern, lim=top_k))
+                        for row in r2.fetchall():
+                            cid = row[0]
+                            if cid not in found:
+                                found.append(cid)
+                                if len(found) >= top_k:
+                                    break
+                        if len(found) >= top_k:
+                            break
+                    contentids = found
+
                 if contentids:
                     stmt = select(POI).where(POI.contentid.in_(contentids)).limit(top_k)
                     r = await session.execute(stmt)
                     rows = r.scalars().all()
+                    scored = []
                     for p in rows:
+                        textblob = ((p.title or '') + ' ' + (p.raw_json or '')).lower()
+                        score = 0
+                        for kw in extracted_keywords:
+                            if kw and kw.lower() in textblob:
+                                score += 1
+                        scored.append((score, p))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    final_rows = [p for s, p in scored][:min(5, len(scored))]
+                    for p in final_rows:
                         sources.append({
-                            "contentid": p.contentid,
-                            "title": p.title,
-                            "addr1": p.addr1,
-                            "mapx": p.mapx,
-                            "mapy": p.mapy,
-                            "score": None,
+                            'contentid': p.contentid,
+                            'title': p.title,
+                            'addr1': p.addr1,
+                            'mapx': p.mapx,
+                            'mapy': p.mapy,
+                            'score': None,
                         })
+                    search_path = 'simple_like'
             except Exception:
                 sources = []
 
@@ -113,30 +241,25 @@ async def chat_openai(req: ChatRequest, request: Request):
     # Build prompts; when no local sources exist, allow safe estimated suggestions.
     if no_local_sources:
         system_prompt = (
-            "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하세요. "
-            "로컬 출처가 제공되지 않을 때는, 모델이 합리적으로 '추정'하는 정보를 제공할 수 있습니다. "
-            "모든 외부 추정 정보 또는 불확실한 내용은 반드시 '[추정]'으로 표기하세요. "
-            "로컬 출처를 사용한 경우에는 출처(contentid)를 명시하세요. "
-            "로컬 출처가 없을 때는 불확실성을 명시한 안전한 제안(추천 검색어 2~3개, 대체 장소 유형, 방문 팁 한 줄)을 반드시 포함하세요. "
-            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 또는 '사용된 출처: 없음'을 표기하세요. "
-            "반드시 최소 1개 이상의 제안(한 문장), 추천 검색어 2개, 대체 장소 유형 1개, 방문 팁 1줄을 포함해야 합니다. 응답이 요구사항을 충족하지 않으면 빈 문자열을 반환하지 마세요."
+            "간결하게 답하세요. 로컬 출처가 없을 경우 외부 추정 정보는 '[추정]'으로 표기하세요. "
+            "각 추천은 불릿(-)으로 시작하는 한 문장으로 작성하고, 추천 검색어(2~3개), 대체 장소 유형(1개), 방문 팁(한 줄)을 포함하세요. "
+            "마지막 줄에 '사용된 출처: 없음'을 표기하세요."
         )
         user_prompt = (
             f"질문: {req.message}\n\n"
             f"출처 목록:\n{sources_text}\n\n"
-            "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
+            "요청: 한국어로 간결하게 답하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
             "출처가 없을 경우, 외부 추정 정보는 '[추정]'으로 표기하고, 추천 검색어(2~3개), 대체 장소 유형, 방문 팁(한 줄)을 반드시 제공하세요."
         )
     else:
         system_prompt = (
-            "당신은 서울 지역 정보에 전문적인 한국어 가이드입니다. 질문에 대해 간결하고 정확하게 답하고, "
-            "오직 제공된 로컬 출처만 사용하여 근거 있는 답변만 하세요. 외부의 지식이나 추측은 사용하지 마세요. "
-            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 형태로 표기하세요."
+            "간결하고 근거 기반으로 답하세요. 제공된 로컬 출처만 사용하고 외부 지식이나 추측을 사용하지 마세요. "
+            "각 항목은 불릿(-)으로 시작하는 한 문장으로 작성하고, 출처를 사용했으면 마지막 줄에 '사용된 출처: [contentid,...]'를 표기하세요."
         )
         user_prompt = (
             f"질문: {req.message}\n\n"
             f"출처 목록:\n{sources_text}\n\n"
-            "요청: 한국어로 간결하게 답변하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
+            "요청: 한국어로 간결하게 답하세요. 항목은 불릿(-)으로 시작하고 각 항목은 한 문장으로 구성하세요. "
             "출처를 사용했으면 본문 끝에 사용된 출처의 contentid를 대괄호로 나열하세요. 출처가 없다면 '사용된 출처: 없음'을 쓰세요."
         )
     messages = [{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}]
@@ -159,23 +282,23 @@ async def chat_openai(req: ChatRequest, request: Request):
                                 is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                                 if is_modern and hasattr(c, 'responses'):
                                     # Responses API: pass messages list as `input` for chat-style models
-                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=2048), timeout=30)
+                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS), timeout=OPENAI_TIMEOUT)
                                 else:
                                     token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
-                                    kwargs = {token_param: 1024}
+                                    kwargs = {token_param: OPENAI_MAX_OUTPUT_TOKENS}
                                     if not is_modern:
                                         kwargs['temperature'] = 0.6
-                                    resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
+                                    resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=OPENAI_TIMEOUT)
                         else:
                             is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                             if is_modern and hasattr(client, 'responses'):
-                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
+                                resp = await asyncio.wait_for(client.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS), timeout=OPENAI_TIMEOUT)
                             else:
                                 token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
-                                kwargs = {token_param: 350}
+                                kwargs = {token_param: OPENAI_MAX_OUTPUT_TOKENS}
                                 if not is_modern:
                                     kwargs['temperature'] = 0.6
-                                resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
+                                resp = await asyncio.wait_for(client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=OPENAI_TIMEOUT)
                     except Exception as ex:
                         last_exc = traceback.format_exc()
                         resp = None
@@ -187,13 +310,13 @@ async def chat_openai(req: ChatRequest, request: Request):
                             client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
                             is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                             if is_modern and hasattr(client, 'responses'):
-                                return client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_output_tokens=2048)
+                                return client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS)
                             token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
-                            kwargs = {token_param: 1024}
+                            kwargs = {token_param: OPENAI_MAX_OUTPUT_TOKENS}
                             if not is_modern:
                                 kwargs['temperature'] = 0.6
                             return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
-                        resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=30)
+                        resp = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=OPENAI_TIMEOUT)
                     except Exception as ex:
                         last_exc = traceback.format_exc()
                         resp = None
@@ -211,7 +334,6 @@ async def chat_openai(req: ChatRequest, request: Request):
                                 return json.dumps(r, ensure_ascii=False, default=str)
                             if hasattr(r, 'to_dict'):
                                 return json.dumps(r.to_dict(), ensure_ascii=False, default=str)
-                            # attempt to extract common fields
                             d = {}
                             for k in ('model', 'output_text', 'choices', 'output'):
                                 try:
@@ -224,7 +346,6 @@ async def chat_openai(req: ChatRequest, request: Request):
                             return repr(r)
                     serialized = _serialize_resp(resp)
                     logger.info("openai_raw_response", extra={"extra": {"raw_response": serialized}})
-                    # also include serialized raw response in model_meta for debugging via API
                     try:
                         model_meta['raw_response'] = serialized
                     except Exception:
@@ -336,5 +457,54 @@ async def chat_openai(req: ChatRequest, request: Request):
             model_meta['fallback'] = True
         except Exception:
             pass
+
+    # include extracted keywords (if any) in model_meta for debugging/client display
+    try:
+        if extracted_keywords is not None:
+            model_meta['extracted_keywords'] = extracted_keywords
+    except Exception:
+        pass
+    try:
+        if extracted_keywords_text is not None:
+            model_meta['extracted_keywords_text'] = extracted_keywords_text
+    except Exception:
+        pass
+    try:
+        if 'search_path' in locals() and search_path is not None:
+            model_meta['search_path'] = search_path
+    except Exception:
+        pass
+
+    # Attach concise debug info to `model_meta`
+    try:
+        if extracted_keywords is not None:
+            model_meta['extracted_keywords'] = extracted_keywords
+    except Exception:
+        pass
+    try:
+        if extracted_keywords_text is not None:
+            model_meta['extracted_keywords_text'] = extracted_keywords_text
+    except Exception:
+        pass
+    try:
+        if addr_fragment:
+            model_meta['addr_fragment'] = addr_fragment
+    except Exception:
+        pass
+    try:
+        if 'search_path' in locals() and search_path is not None:
+            model_meta['search_path'] = search_path
+    except Exception:
+        pass
+    try:
+        if parser_raw is not None:
+            model_meta['parser_raw'] = parser_raw
+    except Exception:
+        pass
+    try:
+        if parser_json is not None:
+            model_meta['parser_json'] = parser_json
+    except Exception:
+        pass
 
     return {"id": resp_id, "reply": reply_text, "sources": sources, "session_id": session_id, "model_meta": model_meta}

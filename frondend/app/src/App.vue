@@ -47,24 +47,7 @@
             <span class="nav-home-label">홈</span>
           </router-link>
 
-          <button type="button" class="btn btn-primary" @click="openComposer">
-            <svg
-              viewBox="0 0 24 24"
-              width="17"
-              height="17"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M12 5v14M5 12h14"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
-
-            여행 이야기 쓰기
-          </button>
+          <!-- Removed "여행 이야기 쓰기" header button -->
         </nav>
       </div>
     </header>

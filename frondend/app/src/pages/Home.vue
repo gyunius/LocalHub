@@ -134,6 +134,7 @@
         <MapView ref="mapViewRef" filename="서울_여행코스.json" :routeMode="routeMode" :editingRoute="composing" @route-changed="onRouteChanged" />
       </section>
     </section>
+    <ChatbotFloating />
   </div>
 </template>
 
@@ -144,6 +145,7 @@ import BoardList from '../components/BoardList.vue'
 import MapView from '../components/MapView.vue'
 import PostForm from './PostForm.vue'
 import PostDetail from './PostDetail.vue'
+import ChatbotFloating from '../components/ChatbotFloating.vue'
 
 // route selection mode (지도에서 장소를 선택하는 모드)
 const routeMode = ref(false)
