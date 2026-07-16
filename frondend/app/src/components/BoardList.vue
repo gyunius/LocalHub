@@ -22,6 +22,11 @@
           v-for="post in visiblePosts"
           :key="post.id"
           class="post-card"
+          role="button"
+          tabindex="0"
+          @click="openPost(post)"
+          @keydown.enter.prevent="openPost(post)"
+          @keydown.space.prevent="openPost(post)"
         >
           <div class="post-card-top">
             <span class="post-category">여행 이야기</span>
@@ -47,22 +52,11 @@
             </span>
           </div>
 
-          <router-link
-            :to="{ name: 'PostDetail', params: { id: post.id } }"
-            class="post-title"
-          >
-            {{ post.title }}
-          </router-link>
+          <div class="post-title">{{ post.title }}</div>
 
-          <p v-if="!isExpanded(post.id)" class="post-preview">
-            {{ post.content }}
+          <p class="post-preview">
+            {{ previewText(post.content) }}
           </p>
-
-          <transition name="reveal">
-            <p v-if="isExpanded(post.id)" class="post-content">
-              {{ post.content }}
-            </p>
-          </transition>
 
           <div class="post-footer">
             <span class="view-count">
@@ -92,30 +86,7 @@
               {{ displayedCountFor(post) }}
             </span>
 
-            <button
-              type="button"
-              class="expand-button"
-              @click="onToggle(post)"
-            >
-              {{ isExpanded(post.id) ? '접기' : '미리보기' }}
-
-              <svg
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                :class="{ rotated: isExpanded(post.id) }"
-                aria-hidden="true"
-              >
-                <path
-                  d="m7 10 5 5 5-5"
-                  stroke="currentColor"
-                  stroke-width="1.9"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
+            <!-- preview removed: always show brief preview in list -->
           </div>
         </li>
       </ul>
@@ -181,6 +152,10 @@ const props = defineProps<{
   pageSize?: number
 }>()
 
+const emit = defineEmits<{
+  (e: 'open-post', id: string): void
+}>()
+
 const filename = props.filename ?? 'mock_posts.json'
 const pageSize = props.pageSize ?? 3
 
@@ -200,13 +175,7 @@ const allLoaded = computed(
   () => visibleCount.value >= totalCount.value,
 )
 
-const expanded = ref(new Set<string>())
-
 const displayedCounts = ref<Record<string, number>>({})
-
-function isExpanded(id: string) {
-  return expanded.value.has(id)
-}
 
 function displayedCountFor(post: Post) {
   return (
@@ -215,27 +184,20 @@ function displayedCountFor(post: Post) {
   )
 }
 
-function onToggle(post: Post) {
-  const next = new Set(expanded.value)
-  const opening = !next.has(post.id)
+function previewText(input?: string | null, max = 120) {
+  if (!input) return ''
+  // collapse whitespace and trim
+  const s = String(input).replace(/\s+/g, ' ').trim()
+  if (s.length <= max) return s
+  return s.slice(0, max).trimEnd() + '...'
+}
 
-  if (opening) {
-    const newDisplayed = incrementViewOptimistic(
-      post.id,
-      post.views ?? 0,
-    )
 
-    displayedCounts.value = {
-      ...displayedCounts.value,
-      [post.id]: newDisplayed,
-    }
 
-    next.add(post.id)
-  } else {
-    next.delete(post.id)
-  }
-
-  expanded.value = next
+function openPost(post: Post) {
+  try {
+    emit('open-post', String(post.id))
+  } catch (e) {}
 }
 
 async function loadAll() {
@@ -403,6 +365,15 @@ watch(
   box-shadow: 0 10px 26px rgba(46, 31, 76, 0.08);
 }
 
+.post-card[role="button"] {
+  cursor: pointer;
+}
+
+.post-card[role="button"]:focus {
+  box-shadow: 0 0 0 4px rgba(117, 67, 199, 0.08);
+  outline: none;
+}
+
 .post-card-top,
 .post-footer {
   display: flex;
@@ -459,9 +430,9 @@ watch(
 .post-preview {
   display: -webkit-box;
   overflow: hidden;
-
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
+  text-overflow: ellipsis;
 }
 
 .post-content {

@@ -47,7 +47,7 @@
             <span class="nav-home-label">홈</span>
           </router-link>
 
-          <router-link to="/posts/new" class="btn btn-primary">
+          <button type="button" class="btn btn-primary" @click="openComposer">
             <svg
               viewBox="0 0 24 24"
               width="17"
@@ -64,7 +64,7 @@
             </svg>
 
             여행 이야기 쓰기
-          </router-link>
+          </button>
         </nav>
       </div>
     </header>
@@ -79,4 +79,11 @@
   </div>
 </template>
 
-<script setup lang="ts" />
+<script setup lang="ts">
+import { useRouter } from 'vue-router'
+const router = useRouter()
+function openComposer() {
+  // navigate to Home and open embedded composer via query
+  router.push({ name: 'Home', query: { compose: '1' } }).catch(() => {})
+}
+</script>

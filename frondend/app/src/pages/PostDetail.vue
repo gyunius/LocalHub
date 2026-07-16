@@ -1,6 +1,7 @@
 <template>
   <div class="post-detail-page">
     <button
+      v-if="!props.embedded"
       type="button"
       class="back-link"
       @click="$router.back()"
@@ -22,6 +23,31 @@
       </svg>
 
       목록으로 돌아가기
+    </button>
+
+    <button
+      v-else
+      type="button"
+      class="back-link"
+      @click="onClose"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="17"
+        height="17"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="m15 5-7 7 7 7"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+
+      닫기
     </button>
 
     <div
@@ -203,10 +229,16 @@ import {
   verifyPostPassword,
 } from '../services/postService'
 
+const props = defineProps<{ embedded?: boolean; id?: string }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'edit-post', id: string): void
+}>()
+
 const route = useRoute()
 const router = useRouter()
 
-const id = String(route.params.id ?? '')
+const id = String(props.id ?? String(route.params.id ?? ''))
 
 const post = ref<any>(null)
 const loading = ref(true)
@@ -218,6 +250,7 @@ let pendingAction: 'edit' | 'delete' | null = null
 onMounted(async () => {
   try {
     post.value = await fetchPost(id)
+    try { emit('show-route', (post.value as any).route ?? []) } catch (e) {}
   } catch (caughtError) {
     error.value = (caughtError as Error).message
   } finally {
@@ -247,6 +280,10 @@ function startAction(action: 'edit' | 'delete') {
   showPw.value = true
 }
 
+function onClose() {
+  try { emit('close') } catch (e) {}
+}
+
 async function onConfirmPassword(password: string) {
   if (!pendingAction) {
     return
@@ -261,6 +298,11 @@ async function onConfirmPassword(password: string) {
 
       if (!verified) {
         throw new Error('비밀번호가 틀렸습니다.')
+      }
+
+      if (props.embedded) {
+        try { emit('edit-post', id) } catch (e) {}
+        return
       }
 
       router.push({

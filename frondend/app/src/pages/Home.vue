@@ -56,17 +56,18 @@
           </div>
 
           <div class="panel-actions" style="display:inline-flex;gap:8px;align-items:center">
-            <router-link
+            <button
               v-if="!composing"
-              to="/posts/new"
+              type="button"
               class="icon-button"
               aria-label="새 글 쓰기"
               title="새 글 쓰기"
+              @click="openComposer"
             >
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
-            </router-link>
+            </button>
 
             <button
               v-if="!composing"
@@ -95,11 +96,15 @@
         <div class="soft-divider"></div>
 
         <div v-if="composing" style="padding:12px;">
-          <PostForm :embedded="true" :routeSelection="currentRoute" @cancel="onComposerCancel" @submitted="onComposerSubmitted" />
+          <PostForm :key="editingPostId ?? 'compose'" :embedded="true" :id="editingPostId" :routeSelection="currentRoute" @cancel="onComposerCancel" @submitted="onComposerSubmitted" />
+        </div>
+
+        <div v-else-if="viewingPostId" style="padding:12px;">
+          <PostDetail :embedded="true" :id="viewingPostId" @close="onClosePost" @edit-post="onEditFromDetail" @show-route="onShowRoute" />
         </div>
 
         <div v-else>
-          <BoardList :key="boardKey" filename="/api/posts?limit=20" :page-size="3" />
+          <BoardList :key="boardKey" filename="/api/posts?limit=20" :page-size="3" @open-post="onOpenPost" />
         </div>
       </aside>
 
@@ -126,17 +131,19 @@
           </div>
         </div>
 
-        <MapView ref="mapViewRef" :routeMode="routeMode" :editingRoute="composing" @route-changed="onRouteChanged" />
+        <MapView ref="mapViewRef" filename="서울_여행코스.json" :routeMode="routeMode" :editingRoute="composing" @route-changed="onRouteChanged" />
       </section>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import BoardList from '../components/BoardList.vue'
 import MapView from '../components/MapView.vue'
 import PostForm from './PostForm.vue'
+import PostDetail from './PostDetail.vue'
 
 // route selection mode (지도에서 장소를 선택하는 모드)
 const routeMode = ref(false)
@@ -146,11 +153,34 @@ const currentRoute = ref<any[]>([])
 // feed-panel 쪽 composer 표시 상태 (true이면 PostForm을 feed-panel에 렌더)
 const composing = ref(false)
 
+// 왼쪽 패널에서 보고 있는 게시글 ID (embedded detail)
+const viewingPostId = ref<string | null>(null)
+
+// 편집 중인 게시글 ID (embedded PostForm 편집 모드)
+const editingPostId = ref<string | undefined>(undefined)
+
 // BoardList를 강제 리로드할 때 변경하는 키
 const boardKey = ref<number>(0)
 
 // ref to MapView component to call exportSelection()
 const mapViewRef = ref<any>(null)
+
+const route = useRoute()
+const router = useRouter()
+
+function openComposer() {
+  editingPostId.value = undefined
+  composing.value = true
+}
+
+// route query로도 composer를 열 수 있게 (헤더에서 홈으로 이동할 때 사용)
+watch(() => route.query.compose, (val) => {
+  if (val === '1' || val === 'true') {
+    composing.value = true
+    // 쿼리 제거해서 URL 깨끗하게 유지
+    router.replace({ name: 'Home', query: {} }).catch(() => {})
+  }
+})
 
 function startComposerFromRoute() {
   // shortcut: 바로 글쓰기(선택한 게 있으면 composer 열기), 또는 토글 없이 사용 가능
@@ -201,6 +231,37 @@ function onComposerCancel() {
   composing.value = false
   // 보드 새로고침 트리거 (key 변경)
   boardKey.value = Date.now()
+  if (editingPostId.value) {
+    // return to the post detail we were editing
+    viewingPostId.value = editingPostId.value
+    editingPostId.value = undefined
+  } else {
+    viewingPostId.value = null
+  }
+}
+
+function onEditFromDetail(id: string) {
+  editingPostId.value = id
+  composing.value = true
+  viewingPostId.value = null
+}
+
+function onShowRoute(route: any[]) {
+  try {
+    // give MapView the array of contentids (may be empty)
+    mapViewRef.value?.showRouteFromPost?.(route ?? [])
+  } catch (e) {}
+}
+
+function onOpenPost(id: string) {
+  viewingPostId.value = id
+  composing.value = false
+  try { mapViewRef.value?.enableAutoFit?.() } catch (e) {}
+}
+
+function onClosePost() {
+  viewingPostId.value = null
+  try { mapViewRef.value?.clearRoute?.() } catch (e) {}
 }
 
 function onComposerSubmitted() {
@@ -213,6 +274,7 @@ function onComposerSubmitted() {
   try { mapViewRef.value?.clearRoute?.() } catch (e) {}
   // 카메라를 초기 상태로 되돌림
   try { mapViewRef.value?.resetCamera?.() } catch (e) {}
+  editingPostId.value = undefined
 }
 </script>
 

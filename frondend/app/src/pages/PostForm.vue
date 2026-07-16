@@ -232,11 +232,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { createPost, fetchPost, updatePost } from '../services/postService'
 
-const props = defineProps<{ embedded?: boolean; routeSelection?: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }> }>()
+const props = defineProps<{ embedded?: boolean; routeSelection?: Array<{ contentid: string | number; title?: string; lat?: number; lng?: number; order: number }>; id?: string }>()
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'submitted', id?: string | number): void
@@ -244,8 +244,10 @@ const emit = defineEmits<{
 
 const route = useRoute()
 const router = useRouter()
-const id = String(route.params.id ?? '')
-const isEdit = Boolean(id)
+
+const idFromRoute = computed(() => String(route.params.id ?? ''))
+const id = computed(() => String(props.id ?? idFromRoute.value ?? ''))
+const isEdit = computed(() => Boolean(id.value))
 
 const form = reactive({
   title: '',
@@ -286,10 +288,10 @@ onMounted(async () => {
     window.addEventListener('resize', onWindowResize)
   }
 
-  if (isEdit) {
+  if (isEdit.value) {
     loading.value = true
     try {
-      const post = await fetchPost(id)
+      const post = await fetchPost(id.value)
       form.title = post.title ?? ''
       form.content = post.content ?? ''
     } catch (caughtError) {
@@ -297,6 +299,29 @@ onMounted(async () => {
     } finally {
       loading.value = false
     }
+  }
+})
+
+// react to embedded id changes (open editor in-place)
+watch(() => props.id, async (newId) => {
+  if (!props.embedded) return
+  if (!newId) {
+    form.title = ''
+    form.content = ''
+    form.password = ''
+    return
+  }
+
+  loading.value = true
+  error.value = ''
+  try {
+    const post = await fetchPost(String(newId))
+    form.title = post.title ?? ''
+    form.content = post.content ?? ''
+  } catch (err) {
+    error.value = (err as Error).message
+  } finally {
+    loading.value = false
   }
 })
 
@@ -325,7 +350,7 @@ async function onSubmit() {
   loading.value = true
 
   try {
-    if (isEdit) {
+    if (isEdit.value) {
       const upPayload: any = {
         title: form.title.trim(),
         content: form.content.trim(),
@@ -342,13 +367,13 @@ async function onSubmit() {
         }
       } catch {}
 
-      await updatePost(id, upPayload)
+      await updatePost(id.value, upPayload)
 
       // clear temporary route selection after successful update
       try { sessionStorage.removeItem('localhub.routeSelection') } catch (e) {}
 
-      if (props.embedded) emit('submitted', id)
-      else router.push({ name: 'PostDetail', params: { id } })
+      if (props.embedded) emit('submitted', id.value)
+      else router.push({ name: 'PostDetail', params: { id: id.value } })
     } else {
       const payload: any = {
         title: form.title.trim(),
