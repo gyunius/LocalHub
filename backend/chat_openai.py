@@ -12,6 +12,7 @@ except Exception:
     OpenAI = None
 
 from pydantic import BaseModel
+import logging, json
 import traceback
 from uuid import uuid4
 from typing import Optional, List
@@ -21,6 +22,8 @@ from sqlalchemy import select, text
 from .main import AsyncSessionLocal
 
 router = APIRouter()
+
+logger = logging.getLogger("chat_openai")
 
 RATE_LIMIT_WINDOW = 60
 RATE_LIMIT_MAX = 30
@@ -115,7 +118,8 @@ async def chat_openai(req: ChatRequest, request: Request):
             "모든 외부 추정 정보 또는 불확실한 내용은 반드시 '[추정]'으로 표기하세요. "
             "로컬 출처를 사용한 경우에는 출처(contentid)를 명시하세요. "
             "로컬 출처가 없을 때는 불확실성을 명시한 안전한 제안(추천 검색어 2~3개, 대체 장소 유형, 방문 팁 한 줄)을 반드시 포함하세요. "
-            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 또는 '사용된 출처: 없음'을 표기하세요."
+            "답변은 최대 3개의 항목(또는 1~3문장)으로 요약하고, 마지막 줄에 '사용된 출처: [contentid,...]' 또는 '사용된 출처: 없음'을 표기하세요. "
+            "반드시 최소 1개 이상의 제안(한 문장), 추천 검색어 2개, 대체 장소 유형 1개, 방문 팁 1줄을 포함해야 합니다. 응답이 요구사항을 충족하지 않으면 빈 문자열을 반환하지 마세요."
         )
         user_prompt = (
             f"질문: {req.message}\n\n"
@@ -155,10 +159,10 @@ async def chat_openai(req: ChatRequest, request: Request):
                                 is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                                 if is_modern and hasattr(c, 'responses'):
                                     # Responses API: pass messages list as `input` for chat-style models
-                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=1024), timeout=30)
+                                    resp = await asyncio.wait_for(c.responses.create(model=OPENAI_MODEL, input=messages, max_output_tokens=2048), timeout=30)
                                 else:
                                     token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
-                                    kwargs = {token_param: 350}
+                                    kwargs = {token_param: 1024}
                                     if not is_modern:
                                         kwargs['temperature'] = 0.6
                                     resp = await asyncio.wait_for(c.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs), timeout=30)
@@ -183,9 +187,9 @@ async def chat_openai(req: ChatRequest, request: Request):
                             client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
                             is_modern = 'gpt-5' in OPENAI_MODEL or 'gpt-4o' in OPENAI_MODEL
                             if is_modern and hasattr(client, 'responses'):
-                                return client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_completion_tokens=350)
+                                return client.responses.create(model=OPENAI_MODEL, input=user_prompt, max_output_tokens=2048)
                             token_param = 'max_completion_tokens' if is_modern else 'max_tokens'
-                            kwargs = {token_param: 350}
+                            kwargs = {token_param: 1024}
                             if not is_modern:
                                 kwargs['temperature'] = 0.6
                             return client.chat.completions.create(model=OPENAI_MODEL, messages=messages, **kwargs)
@@ -199,8 +203,42 @@ async def chat_openai(req: ChatRequest, request: Request):
                 if resp is None:
                     raise RuntimeError(last_exc or "no compatible OpenAI client available or client call failed")
 
+                # Log raw OpenAI response for debugging (serialize when possible)
+                try:
+                    def _serialize_resp(r):
+                        try:
+                            if isinstance(r, dict):
+                                return json.dumps(r, ensure_ascii=False, default=str)
+                            if hasattr(r, 'to_dict'):
+                                return json.dumps(r.to_dict(), ensure_ascii=False, default=str)
+                            # attempt to extract common fields
+                            d = {}
+                            for k in ('model', 'output_text', 'choices', 'output'):
+                                try:
+                                    v = getattr(r, k, None)
+                                except Exception:
+                                    v = None
+                                d[k] = v
+                            return json.dumps(d, ensure_ascii=False, default=str)
+                        except Exception:
+                            return repr(r)
+                    serialized = _serialize_resp(resp)
+                    logger.info("openai_raw_response", extra={"extra": {"raw_response": serialized}})
+                    # also include serialized raw response in model_meta for debugging via API
+                    try:
+                        model_meta['raw_response'] = serialized
+                    except Exception:
+                        pass
+                except Exception:
+                    # don't let logging break normal flow
+                    pass
+
                 # Parse response robustly for different client types
-                model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
+                # update model_meta rather than overwrite to preserve debug fields
+                try:
+                    model_meta.update({"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)})
+                except Exception:
+                    model_meta = {"provider":"openai","model": getattr(resp, 'model', OPENAI_MODEL)}
                 openai_resp_text = ""
                 # Responses API may provide `output_text` or `output` array
                 try:
@@ -260,4 +298,43 @@ async def chat_openai(req: ChatRequest, request: Request):
         model_meta = {"error": str(e)}
 
     reply_text = openai_resp_text or f"[openai empty reply] 찾은 장소 수: {len(sources)}"
+    # If model produced no usable text, generate a safe server-side fallback
+    def _make_fallback(query: str, sources_present: bool):
+        q = query or ""
+        # simple heuristics to build fallback suggestions
+        keywords = []
+        try:
+            parts = q.replace('?', '').replace('.', '').split()
+            # take up to 2 non-stopword tokens
+            for p in parts:
+                if len(keywords) >= 2:
+                    break
+                if len(p) > 1:
+                    keywords.append(p)
+        except Exception:
+            keywords = []
+        if not keywords:
+            keywords = ["서울", "추천"]
+        rec_search = ", ".join(keywords[:2])
+        items = []
+        if sources_present:
+            items.append("- 제공된 로컬 출처를 기준으로 관련 장소를 확인해보세요. [추정]")
+        else:
+            items.append(f"- [추정] {keywords[0]} 인근의 유명한 관광지나 공원, 전망대를 고려해보세요.")
+            items.append(f"- [추정] 박물관이나 실내 체험형 전시도 가족 방문에 좋습니다.")
+            items.append(f"- [추정] 날씨와 혼잡도를 고려해 평일 낮 방문을 권합니다.")
+        tip_line = f"추천 검색어: {rec_search}"
+        alt_line = "대체 장소 유형: 박물관, 실내 체험관"
+        visit_tip = "방문 팁: 가능하면 평일 낮 방문이나 사전 예매를 권합니다. [추정]"
+        body = "\n".join(items + ["", tip_line, alt_line, visit_tip, "", "사용된 출처: 없음"]) if not sources_present else "\n".join(items + ["", tip_line, alt_line, visit_tip, "", "사용된 출처: [provided]"])
+        return body
+
+    if not openai_resp_text or openai_resp_text.strip() == "":
+        fallback = _make_fallback(req.message, bool(sources))
+        reply_text = fallback
+        try:
+            model_meta['fallback'] = True
+        except Exception:
+            pass
+
     return {"id": resp_id, "reply": reply_text, "sources": sources, "session_id": session_id, "model_meta": model_meta}
